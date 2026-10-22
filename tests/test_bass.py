@@ -32,3 +32,24 @@ def test_excursion_below_xmax_at_amp_limit_80hz():
 def test_zero_frequency_rejected():
     with pytest.raises(ValueError):
         sealed_spl(D, 0.03, np.array([0.0, 50.0]), 2.83)
+
+def test_series_r_lowers_passband_spl():
+    f = np.array([150.0])
+    drop = sealed_spl(D, 0.03, f, 2.83) - sealed_spl(D, 0.03, f, 2.83, series_r=0.8)
+    assert drop[0] == pytest.approx(20 * np.log10((D.re + 0.8) / D.re), abs=0.05)  # ~1.0 dB
+
+def test_series_r_changes_excursion():
+    f = np.array([20.0, 40.0, 80.0, 150.0])
+    x0 = sealed_excursion(D, 0.03, f, 25.0)
+    x1 = sealed_excursion(D, 0.03, f, 25.0, series_r=0.8)
+    assert np.all(x1 < x0)
+    # Well above Fc the cone is mass-controlled and current-limited: x ~ 1 / (Re + series_r).
+    assert x0[3] / x1[3] == pytest.approx((D.re + 0.8) / D.re, rel=0.01)
+
+def test_max_spl_is_min_of_voltage_and_xmax_limits():
+    f = np.geomspace(20, 300, 50)
+    x_lim = max_spl(D, 0.03, f, None)
+    v_lim = sealed_spl(D, 0.03, f, 40.0, series_r=0.8)
+    out = max_spl(D, 0.03, f, 40.0, series_r=0.8)
+    assert np.allclose(out, np.minimum(x_lim, v_lim))
+    assert np.any(x_lim < v_lim) and np.any(v_lim < x_lim)  # both branches active over 20-300 Hz
