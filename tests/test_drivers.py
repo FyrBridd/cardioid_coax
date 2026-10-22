@@ -18,3 +18,8 @@ def test_dayton_series_derived():
 def test_unknown_driver():
     with pytest.raises(FileNotFoundError):
         load_driver("nope")
+
+
+def test_driver_names():
+    assert load_driver("dayton_rss265ho_44").name == "Dayton RSS265HO-44"
+    assert load_driver("bms_10c262").name == "BMS 10C262"

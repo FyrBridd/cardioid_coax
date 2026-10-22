@@ -73,7 +73,13 @@ def export_all(
 ) -> dict[str, list[Path]]:
     out_dir = Path(out_dir)
     for sub in ("step", "stl", "dxf"):
-        (out_dir / sub).mkdir(parents=True, exist_ok=True)
+        d = out_dir / sub
+        d.mkdir(parents=True, exist_ok=True)
+        # These dirs are ours: drop stale files (e.g. _PROVISIONAL variants
+        # left over after drivers_measured flips). Only files, no recursion.
+        for old in d.iterdir():
+            if old.is_file():
+                old.unlink()
     step: list[Path] = []
     stl: list[Path] = []
     dxf: list[Path] = []
@@ -83,19 +89,21 @@ def export_all(
     step.append(asm_path)
 
     provisional = not p.drivers_measured
+    suffix = "_PROVISIONAL" if provisional else ""
     for panel in build_panels(l, p, coax, bass):
         sp = out_dir / "step" / f"{panel.name}.step"
         cq.exporters.export(panel_solid(panel), str(sp))
         step.append(sp)
-        dp = out_dir / "dxf" / f"{panel.name}{'_PROVISIONAL' if provisional else ''}.dxf"
+        dp = out_dir / "dxf" / f"{panel.name}{suffix}.dxf"
         _write_dxf(panel, provisional, dp)
         dxf.append(dp)
 
+    # The flare throat is the coax cutout_d, which is provisional until measured.
     flare = flare_insert(l, p, coax)
-    fs = out_dir / "step/flare_insert.step"
+    fs = out_dir / "step" / f"flare_insert{suffix}.step"
     cq.exporters.export(flare, str(fs))
     step.append(fs)
-    fl = out_dir / "stl/flare_insert.stl"
+    fl = out_dir / "stl" / f"flare_insert{suffix}.stl"
     cq.exporters.export(flare, str(fl))
     stl.append(fl)
     return {"step": step, "stl": stl, "dxf": dxf}

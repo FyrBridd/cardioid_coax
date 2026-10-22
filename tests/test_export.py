@@ -23,8 +23,9 @@ def test_exports(tmp_path):
     wp = cq.importers.importStep(str(tmp_path / "step/cabinet_assembly.step"))
     bb = cq.Compound.makeCompound(wp.vals()).BoundingBox()
     assert (bb.xlen, bb.ylen) == pytest.approx((320, 350), abs=0.5)
-    assert (tmp_path / "stl/flare_insert.stl").stat().st_size > 0
-    assert (tmp_path / "step/flare_insert.step").exists()
+    # The flare depends on the provisional coax cutout, so it is provisional too.
+    assert (tmp_path / "stl/flare_insert_PROVISIONAL.stl").stat().st_size > 0
+    assert (tmp_path / "step/flare_insert_PROVISIONAL.step").exists()
     assert (tmp_path / "step/baffle_inner.step").exists()
 
 
@@ -51,6 +52,21 @@ def test_rounded_rect_has_arcs(tmp_path):
 
 def test_measured_drops_provisional(tmp_path):
     files = export_all(L, dataclasses.replace(P, drivers_measured=True), CX, B, tmp_path)
-    assert not any("PROVISIONAL" in f.name for f in files["dxf"])
+    assert not any("PROVISIONAL" in f.name for fs in files.values() for f in fs)
+    assert (tmp_path / "step/flare_insert.step").exists() and (tmp_path / "stl/flare_insert.stl").exists()
     doc = ezdxf.readfile(files["dxf"][0])
     assert not any("PROVISIONAL" in e.text for e in doc.modelspace() if e.dxftype() == "MTEXT")
+
+
+def test_stale_outputs_removed(tmp_path):
+    export_all(L, P, CX, B, tmp_path)  # provisional names
+    keep = [tmp_path / "summary.md", tmp_path / "plots/x.png", tmp_path / "dxf/sub/keep.txt"]
+    for k in keep:
+        k.parent.mkdir(parents=True, exist_ok=True)
+        k.write_text("keep")
+    (tmp_path / "stl/old.stl").write_text("stale")
+    files = export_all(L, dataclasses.replace(P, drivers_measured=True), CX, B, tmp_path)
+    written = {f for fs in files.values() for f in fs}
+    on_disk = {f for sub in ("step", "stl", "dxf") for f in (tmp_path / sub).iterdir() if f.is_file()}
+    assert on_disk == written  # no _PROVISIONAL leftovers, no stray files
+    assert all(k.exists() for k in keep)  # only files directly in step/, stl/, dxf/ are removed

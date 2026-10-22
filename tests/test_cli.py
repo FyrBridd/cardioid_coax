@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from speaker.cli import main
 
 
@@ -18,3 +20,14 @@ def test_build_end_to_end(tmp_path):
     assert "geometry high; net volumes medium (filler not modelled; displacement estimated)" in s
     # Bass: shared inductor DCR doubled per driver.
     assert "0.4 ohm shared by 2 drivers in parallel -> 0.8 ohm effective per driver" in s
+
+
+def test_build_rejects_bad_params_with_exit_code_2(tmp_path, capsys):
+    text = Path("params/default.toml").read_text().replace("depth_mm = 350", "depth_mm = 351")
+    pf = tmp_path / "p.toml"
+    pf.write_text(text)
+    out = tmp_path / "out"
+    assert main(["build", "--params", str(pf), "--out", str(out)]) == 2
+    err = capsys.readouterr().err
+    assert err.startswith("error: ") and "depth 351 mm" in err
+    assert not out.exists()  # nothing written before validation
