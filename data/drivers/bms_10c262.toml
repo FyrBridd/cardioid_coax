@@ -1,0 +1,23 @@
+# BMS 10C262 coaxial driver.
+# Units in this file: mm, litres, cm^2, mH. drivers.py converts to SI.
+
+name = "BMS 10C262"
+
+fs = 65.0
+qes = 0.40
+qms = 4.6
+vas_l = 25.5
+sd_cm2 = 320.0
+re = 5.9
+le_mh = 0.5
+xmax_mm = 5.5
+
+outer_d_mm = 260.0
+cutout_d_mm = 230.0  # PROVISIONAL: coax cutout is an estimate
+depth_mm = 146.0
+flange_t_mm = 10.0   # PROVISIONAL
+basket_d_mm = 228.0
+magnet_d_mm = 156.0
+
+sens_db = 96.0        # 2.83 V, 1 m
+hf_sens_db = 112.0    # HF section

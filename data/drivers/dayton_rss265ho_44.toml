@@ -1,0 +1,25 @@
+# Dayton RSS265HO-4 woofer, wired with its two coils in SERIES.
+# The datasheet gives Re 1.6 ohm and Le 0.77 mH for PARALLEL coils. Wiring the
+# coils in series gives 4x those values (Re 6.4 ohm, Le 3.08 mH). The T/S
+# parameters below are the series-wired ones; Bl is derived from them.
+# Units in this file: mm, litres, cm^2, mH. drivers.py converts to SI.
+
+name = "Dayton RSS265HO-4"
+
+fs = 27.6
+qes = 0.50
+qms = 4.42
+vas_l = 34.8
+sd_cm2 = 352.3
+re = 6.4
+le_mh = 3.08
+xmax_mm = 13.25
+
+outer_d_mm = 266.0
+cutout_d_mm = 235.0  # PROVISIONAL
+depth_mm = 136.5
+flange_t_mm = 10.0   # PROVISIONAL
+basket_d_mm = 235.0
+magnet_d_mm = 180.0  # PROVISIONAL
+
+sens_db = 84.5       # 2.83 V, 1 m
