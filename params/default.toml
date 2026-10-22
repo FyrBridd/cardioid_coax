@@ -1,0 +1,38 @@
+# Lengths in mm, volumes in litres. speaker.params converts to SI.
+drivers_measured = false
+coax = "bms_10c262"
+bass = "dayton_rss265ho_44"
+
+[cabinet]
+width_mm = 320
+depth_mm = 350
+panel_t_mm = 18
+baffle_t_mm = 36
+coax_centre_z_mm = 950
+top_margin_mm = 20
+divider_t_mm = 18
+side_edge_radius_mm = 0
+flare_mouth_d_mm = 290
+bass_centres_z_mm = [200, 520]
+coax_chamber_net_volume_l = 10
+
+[vents]
+slots_per_side = 6
+slot_w_mm = 100
+slot_h_mm = 10
+slot_pitch_mm = 22
+centre_from_front_mm = 270
+specific_resistance_rayl = 100
+
+[room]
+length_x_mm = 4000
+width_y_mm = 4600
+height_z_mm = 2000
+back_gap_mm = 75
+speaker_y_mm = [960, 3460]
+seat_mm = [3425, 2210, 950]
+
+[drive]
+amp_v_rms = 25.0
+inductor_dcr_ohm = 0.4
+active_v_rms = 40.0
