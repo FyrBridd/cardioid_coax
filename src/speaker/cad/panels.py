@@ -96,7 +96,12 @@ def _driver_cuts(cx: float, cy: float, d: Driver, n_bolts: int) -> list[Feature]
 def build_panels(l: Layout, p: Params, coax: Driver, bass: Driver) -> list[Panel]:
     c = p.cabinet
     W, D, H = _mm(c.width), _mm(c.depth), _mm(l.height)
-    t, bt = _mm(c.panel_t), _mm(c.baffle_t)
+    t, bt, dt = _mm(c.panel_t), _mm(c.baffle_t), _mm(c.divider_t)
+    if abs(bt - 2 * t) > 1e-6:
+        raise ValueError(
+            f"baffle_t {bt:.1f} mm must equal two panel layers (2 x panel_t {t:.1f} mm = "
+            f"{2 * t:.1f} mm): the baffle is built as an outer and an inner panel_t layer"
+        )
     iw = W - 2 * t  # between the sides
     ih = H - 2 * t  # between top and bottom
     cx_g, cz_g = (_mm(v) for v in l.coax_centre)
@@ -138,7 +143,7 @@ def build_panels(l: Layout, p: Params, coax: Driver, bass: Driver) -> list[Panel
         Panel("top", iw, D - t, t, (), _placement((t, t, H - t), X, Y)),
         Panel("bottom", iw, D - t, t, (), _placement((t, t, 0), X, Y)),
         Panel("back", iw, ih, t, back_feats, _placement((W - t, D - t, t), NX, Z)),
-        Panel("divider", iw, D - bt - t, t, (), _placement((t, bt, _mm(l.divider_z)), X, Y)),
+        Panel("divider", iw, D - bt - t, dt, (), _placement((t, bt, _mm(l.divider_z)), X, Y)),
     ]
 
 
