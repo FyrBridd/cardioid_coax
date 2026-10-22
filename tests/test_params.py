@@ -17,3 +17,9 @@ def test_depth_over_350_rejected(tmp_path):
     f = tmp_path / "p.toml"; f.write_text(text)
     with pytest.raises(ValueError, match="depth"):
         load_params(f)
+
+def test_side_edge_radius_not_implemented(tmp_path):
+    text = Path("params/default.toml").read_text().replace("side_edge_radius_mm = 0", "side_edge_radius_mm = 6")
+    f = tmp_path / "p.toml"; f.write_text(text)
+    with pytest.raises(ValueError, match="side_edge_radius is not implemented yet"):
+        load_params(f)

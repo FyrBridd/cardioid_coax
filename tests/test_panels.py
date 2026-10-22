@@ -57,7 +57,8 @@ def test_divider_uses_divider_t():
     _assert_no_intersections(l, p)
 
 def test_baffle_must_be_two_panel_layers():
+    # compute_layout rejects this first (test_layout); the panel-level guard
+    # still protects direct callers that pass an unvalidated parameter set.
     p = dataclasses.replace(P, cabinet=dataclasses.replace(P.cabinet, baffle_t=0.040))
-    l = compute_layout(p, CX, B)
     with pytest.raises(ValueError, match=r"baffle_t 40\.0 mm.*panel_t 18\.0 mm"):
-        build_panels(l, p, CX, B)
+        build_panels(L, p, CX, B)

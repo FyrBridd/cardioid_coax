@@ -18,6 +18,7 @@ from .params import Params
 DIVIDER_CLEARANCE = 0.010  # m between coax frame bottom and divider top
 BASS_NET_TARGET = 0.050  # m^3, soft target (warning)
 BASS_NET_MIN = 0.030  # m^3, hard minimum (ValueError)
+EAR_HEIGHT_TOLERANCE = 0.020  # m, coax centre vs seated ear height (warning)
 
 
 @dataclass(frozen=True)
@@ -30,7 +31,8 @@ class Layout:
     divider_z: float  # bottom face of the divider
     coax_chamber_gross: float
     coax_chamber_net: float
-    filler_volume: float
+    filler_volume: float  # NOT modelled in the CAD; the builder adds it
+    coax_chamber_as_built: float  # gross less coax displacement, i.e. without filler
     bass_gross: float
     bass_net: float
     vent_slots: tuple[tuple[float, float, float, float], ...]  # (y, z, w, h)
@@ -55,7 +57,8 @@ def compute_layout(p: Params, coax: Driver, bass: Driver) -> Layout:
     bass_gross = interior_w * interior_d * (divider_z - c.panel_t)
     bass_net = bass_gross - 2 * _displacement(bass)
     coax_net = c.coax_chamber_net_volume
-    filler = coax_gross - _displacement(coax) - coax_net
+    coax_as_built = coax_gross - _displacement(coax)
+    filler = coax_as_built - coax_net
 
     # Slots: one side's stack, centred vertically on the coax chamber.
     z_mid = (divider_top + top_underside) / 2
@@ -75,6 +78,7 @@ def compute_layout(p: Params, coax: Driver, bass: Driver) -> Layout:
         coax_chamber_gross=coax_gross,
         coax_chamber_net=coax_net,
         filler_volume=filler,
+        coax_chamber_as_built=coax_as_built,
         bass_gross=bass_gross,
         bass_net=bass_net,
         vent_slots=vent_slots,
@@ -85,6 +89,12 @@ def compute_layout(p: Params, coax: Driver, bass: Driver) -> Layout:
         warns.append(
             f"bass net volume {bass_net * 1000:.1f} L is below the "
             f"{BASS_NET_TARGET * 1000:.0f} L target (25 L per driver)"
+        )
+    ear = p.room.seat[2]
+    if abs(c.coax_centre_z - ear) > EAR_HEIGHT_TOLERANCE:
+        warns.append(
+            f"coax centre {_mm(c.coax_centre_z)} differs from the seat ear height {_mm(ear)} "
+            f"by more than {_mm(EAR_HEIGHT_TOLERANCE)}"
         )
     return dataclasses.replace(layout, warnings=tuple(warns))
 
@@ -111,6 +121,19 @@ def _mm(x: float) -> str:
 
 def validate(l: Layout, p: Params, coax: Driver, bass: Driver) -> None:
     c = p.cabinet
+    if abs(c.baffle_t - 2 * c.panel_t) > 1e-9:
+        raise ValueError(
+            f"baffle_t {_mm(c.baffle_t)} must equal two panel layers (2 x panel_t {_mm(c.panel_t)} = "
+            f"{_mm(2 * c.panel_t)}): the baffle is built as an outer and an inner panel_t layer"
+        )
+    if c.top_margin < 0:
+        raise ValueError(
+            f"top_margin {_mm(c.top_margin)} is negative: coax frame top at "
+            f"{_mm(c.coax_centre_z + coax.outer_d / 2)} would cut into the top panel "
+            f"(underside at {_mm(l.height - c.panel_t)})"
+        )
+    if p.vents.slots_per_side < 1:
+        raise ValueError(f"slots_per_side must be at least 1, got {p.vents.slots_per_side}")
     if coax.outer_d > l.interior_w:
         raise ValueError(
             f"coax driver outer diameter {_mm(coax.outer_d)} exceeds interior width {_mm(l.interior_w)}"
@@ -148,15 +171,28 @@ def validate(l: Layout, p: Params, coax: Driver, bass: Driver) -> None:
     if l.filler_volume < 0:
         raise ValueError(
             f"coax chamber too small: gross {l.coax_chamber_gross * 1000:.2f} L less coax "
-            f"displacement is {(l.coax_chamber_gross - l.coax_chamber_net - l.filler_volume) * 1000:.2f} L "
+            f"displacement is {l.coax_chamber_as_built * 1000:.2f} L "
             f"net-available, below target {l.coax_chamber_net * 1000:.2f} L"
         )
     back = c.depth - c.panel_t
-    for y, z, w, h in l.vent_slots:
-        if y + w / 2 > back:
+    chamber_lo = l.divider_z + c.divider_t
+    chamber_hi = l.height - c.panel_t
+    for i, (y, z, w, h) in enumerate(l.vent_slots, start=1):
+        if y + w / 2 > back + 1e-9:
             raise ValueError(
                 f"vent slot overlap with back panel: slot extends to y={_mm(y + w / 2)}, "
                 f"back panel front face at {_mm(back)}"
+            )
+        if y - w / 2 < c.baffle_t - 1e-9:
+            raise ValueError(
+                f"vent slot overlap with baffle: slot starts at y={_mm(y - w / 2)}, "
+                f"baffle rear face at {_mm(c.baffle_t)}"
+            )
+        if z - h / 2 < chamber_lo - 1e-9 or z + h / 2 > chamber_hi + 1e-9:
+            raise ValueError(
+                f"vent slot {i} of {len(l.vent_slots)} spans z={_mm(z - h / 2)} to {_mm(z + h / 2)}, "
+                f"outside the coax chamber (divider top face at {_mm(chamber_lo)}, "
+                f"top panel underside at {_mm(chamber_hi)}); reduce slots_per_side or slot_pitch"
             )
     if l.bass_net < BASS_NET_MIN:
         raise ValueError(

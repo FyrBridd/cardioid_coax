@@ -95,6 +95,11 @@ def load_params(path: Path | None = None) -> Params:
             f"cabinet depth {cabinet.depth * 1000:.0f} mm exceeds the "
             f"{MAX_DEPTH * 1000:.0f} mm limit"
         )
+    if cabinet.side_edge_radius != 0:
+        raise ValueError(
+            "side_edge_radius is not implemented yet: the CAD builds square side edges, "
+            f"set side_edge_radius_mm = 0 (got {cabinet.side_edge_radius * 1000:g} mm)"
+        )
     vents = Vents(
         slots_per_side=int(v["slots_per_side"]),
         slot_w=_mm(v["slot_w_mm"]),
