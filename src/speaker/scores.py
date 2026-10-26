@@ -3,6 +3,8 @@
 Inputs are complex PEAK pressures (Pa); every level is SPL = 20 log10(|p| / √2 / 20 µPa).
 Each band-based score is computed over band ∩ [f[0], trusted_limit] (confidence "trusted") and
 band ∩ [trusted_limit, f[-1]] (confidence "low"); a part narrower than 1/3 octave is skipped.
+Every score's detail carries puck_fraction (the share of the part's grid points where the puck
+field takes any part in the coax fields) and puck_mean_weight (the mean puck weight over them).
 """
 from __future__ import annotations
 
@@ -64,10 +66,11 @@ def _runs(f: np.ndarray, ok: np.ndarray, m: np.ndarray) -> list[tuple[float, flo
 
 
 class _Ctx:
-    def __init__(self, f, total, coax_sec, obs: Observation, spin: Spin):
+    def __init__(self, f, total, coax_sec, obs: Observation, spin: Spin, coax_far=None):
         self.f, self.obs, self.spin = f, obs, spin
         self.total = _spl(total)
         self.coax = _spl(coax_sec)
+        self.far = None if coax_far is None else _spl(coax_far)  # (nf, 2): H 0°, H 180° at 50 m
         self.h = {int(a): int(i) for a, i in zip(obs.h_angles, obs.h_idx)}
         self._sm: dict[int, np.ndarray] = {}
 
@@ -140,11 +143,28 @@ def _rolloff(c: _Ctx, m):
 def _rejection(curve: str, status: Callable[[float], str], angles=(-180,)):  # 180 deg is the -180 ring entry
     def run(c: _Ctx, m):
         lv = getattr(c, curve)
-        d = np.stack([lv[:, c.h[0]] - lv[:, c.h[a]] for a in angles])  # (angles, nf)
-        worst = d[:, m].min(axis=1)
-        k = int(worst.argmin())
-        return float(worst[k]), status(float(worst[k])), {"worst_angle": angles[k]}
+        d = np.stack([lv[:, c.h[0]] - lv[:, c.h[a]] for a in angles])[:, m]  # (angles, part)
+        k, j = np.unravel_index(int(d.argmin()), d.shape)
+        return float(d[k, j]), status(float(d[k, j])), {"worst_angle": angles[k], "worst_hz": float(c.f[m][j])}
     return run
+
+
+def _far_rejection(c: _Ctx, m):
+    if c.far is None:
+        return None
+    d = (c.far[:, 0] - c.far[:, 1])[m]
+    if np.isnan(d).all():
+        return None
+    j = int(np.nanargmin(d))
+    return float(d[j]), "info", {"worst_hz": float(c.f[m][j])}
+
+
+def _puck_weight(f: np.ndarray, blend: tuple[float, float] | None) -> np.ndarray:
+    """Weight of the puck field in the coax fields: 0 below the blend, log ramp across it, 1 above."""
+    if blend is None:
+        return np.zeros_like(f)
+    lo, hi = blend
+    return np.clip(np.log(f / lo) / np.log(hi / lo), 0.0, 1.0)
 
 
 # key, label, formula text, band (or a function of xo), computation
@@ -173,6 +193,9 @@ _SPECS = [
     ("cardioid_hard", "Cardioid rejection 150-300 Hz", (150.0, 300.0),
      _rejection("coax", lambda v: "pass" if v >= 10 else "fail"),
      "The coax section alone: min over 150-300 Hz of L(0 deg) - L(180 deg). Pass if >= 10 dB, else fail."),
+    ("cardioid_hard_far", "Cardioid rejection 150-300 Hz at 50 m", (150.0, 300.0), _far_rejection,
+     "The coax section alone at 50 m (far field): min over 150-300 Hz of L(0 deg) - L(180 deg), the plain level "
+     "ratio of the two points (the 1/r asymmetry is negligible at 50 m). Info; the gate is the 2 m score."),
     ("cardioid_aim", "Cardioid rejection 300-500 Hz", (300.0, 500.0),
      _rejection("coax", lambda v: "pass" if v >= 6 else "warn"),
      "The coax section alone: min over 300-500 Hz of L(0 deg) - L(180 deg). Pass if >= 6 dB, else warn."),
@@ -186,10 +209,17 @@ _SPECS = [
 
 
 def score_all(f, total, coax_sec, obs: Observation, spin: Spin, *, trusted_limit: float,
-              xo: FixedCrossover) -> list[Score]:
-    """Every §4 score, one per key per confidence part wide enough (>= 1/3 octave)."""
+              xo: FixedCrossover, puck_blend: tuple[float, float] | None = None,
+              coax_far: np.ndarray | None = None) -> list[Score]:
+    """Every §4 score, one per key per confidence part wide enough (>= 1/3 octave).
+
+    puck_blend: (lo, hi) Hz of the cabinet -> puck crossfade (Ways.meta["puck_blend"]).
+    coax_far: (nf, 2) coax section at 50 m on H 0° and 180° (Ways.meta["coax_far_h0_h180"]);
+    without it cardioid_hard_far is skipped.
+    """
     f = np.asarray(f, dtype=float)
-    c = _Ctx(f, total, coax_sec, obs, spin)
+    c = _Ctx(f, total, coax_sec, obs, spin, coax_far)
+    w = _puck_weight(f, puck_blend)
     out: list[Score] = []
     for key, label, band, run, formula in _SPECS:
         if key.startswith("di_smooth"):
@@ -200,8 +230,10 @@ def score_all(f, total, coax_sec, obs: Observation, spin: Spin, *, trusted_limit
         for conf, plo, phi in parts:
             if phi < plo * 2**MIN_OCT * (1 - 1e-9):
                 continue
-            r = run(c, (f >= plo) & (f <= phi))
+            m = (f >= plo) & (f <= phi)
+            r = run(c, m)
             if r is not None:
+                puck = {"puck_fraction": float(np.mean(w[m] > 0)), "puck_mean_weight": float(np.mean(w[m]))}
                 out.append(Score(key, label, r[0], "count" if key == "rolloff_monotonic" else "dB",
-                                 r[1], (float(plo), float(phi)), conf, formula, r[2]))
+                                 r[1], (float(plo), float(phi)), conf, formula, {**r[2], **puck}))
     return out

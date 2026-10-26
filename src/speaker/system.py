@@ -9,7 +9,8 @@ Coax LF volume velocity is the lumped cardioid model below LF_JOIN, the datashee
 is the datasheet de-embedded with the smoothed on-axis puck response. Fields are the
 cabinet BEM up to trusted_limit/2, blended into the puck BEM up to trusted_limit, then
 the puck alone; above PUCK_HOLD_F each direction keeps its 12 kHz level relative to the
-datasheet on-axis level.
+datasheet on-axis level. When the cabinet field carries far-field points (meta["far_h0_h180"]),
+the coax section is also composed there, up to the trusted limit.
 """
 from __future__ import annotations
 
@@ -19,7 +20,7 @@ import numpy as np
 
 from speaker.bass import cone_velocity
 from speaker.bem.analytic import baffled_piston_on_axis
-from speaker.bem.run import Observation, SourceField
+from speaker.bem.run import FAR_R, Observation, SourceField
 from speaker.cardioid import CardioidParams, simulate
 from speaker.constants import C
 from speaker.curves import interp_db, load_curve, minimum_phase, smooth
@@ -43,7 +44,11 @@ class Ways:
     f: np.ndarray
     obs: Observation
     ways: dict[str, np.ndarray]  # "bass", "coax_lf", "coax_hf": (nf, nd) complex peak Pa
-    meta: dict  # lf_join_mismatch_db, trusted_limit, hf_reference; u_lf: coax LF peak volume velocity up to the hold
+    # lf_join_mismatch_db, trusted_limit, hf_reference; u_lf: coax LF peak volume velocity up to the hold;
+    # puck_blend: (lo, hi) Hz of the cabinet -> puck crossfade, None without a puck;
+    # coax_far_h0_h180: (nf, 2) coax section at FAR_R on H 0° and 180°, NaN above the trusted
+    # limit, None when the cabinet field has no far-field points
+    meta: dict
 
 
 def coax_section(ways: Ways) -> np.ndarray:
@@ -89,17 +94,20 @@ def _lerp_log(fs: np.ndarray, y: np.ndarray, ft: np.ndarray) -> np.ndarray:
 
 def _field(fld: SourceField, name: str, ft: np.ndarray) -> np.ndarray:
     """(len(ft), nd) field of one source on ft: dB and unwrapped phase, bulk e^{-jkr} removed."""
-    p = fld.p[:, fld.names.index(name), :]
-    if np.array_equal(fld.f, ft):
+    return _interp(fld.f, fld.p[:, fld.names.index(name), :], fld.obs.r, ft)
+
+
+def _interp(fs: np.ndarray, p: np.ndarray, r: float, ft: np.ndarray) -> np.ndarray:
+    """p (len(fs), n) at distance r, onto ft: dB and unwrapped phase, bulk e^{-jkr} removed."""
+    if np.array_equal(fs, ft):
         return p.copy()
-    r = fld.obs.r
-    q = p * np.exp(1j * 2 * np.pi * fld.f / C * r)[:, None]
+    q = p * np.exp(1j * 2 * np.pi * fs / C * r)[:, None]
     db = 20 * np.log10(np.maximum(np.abs(q), 1e-300))
     ph = np.unwrap(np.angle(q), axis=0)
-    out = 10 ** (_lerp_log(fld.f, db, ft) / 20) * np.exp(1j * _lerp_log(fld.f, ph, ft))
+    out = 10 ** (_lerp_log(fs, db, ft) / 20) * np.exp(1j * _lerp_log(fs, ph, ft))
     out *= np.exp(-1j * 2 * np.pi * ft / C * r)[:, None]
-    hit = np.isin(ft, fld.f)
-    out[hit] = p[np.searchsorted(fld.f, ft[hit])]
+    hit = np.isin(ft, fs)
+    out[hit] = p[np.searchsorted(fs, ft[hit])]
     return out
 
 
@@ -217,6 +225,16 @@ def way_responses(
 
     vents = cab_on("vent_left", fi) + cab_on("vent_right", fi)
     lf_i = u_lf[:, None] * coax_on("coax_lf") + u_vent[:, None] * vents
+
+    # Coax section at the far-field points, from the cabinet field alone (the puck has none).
+    far = None
+    if "far_h0_h180" in cab.meta:
+        far = np.full((len(f), 2), np.nan, dtype=complex)
+        n = int(np.count_nonzero(fi <= tl))  # fi equals f below the hold, and tl <= the hold
+        fp = cab.meta["far_h0_h180"]
+        src = {k: _interp(cab.f, fp[:, cab.names.index(k), :], FAR_R, fi[:n])
+               for k in ("coax_lf", "vent_left", "vent_right")}
+        far[:n] = u_lf[:n, None] * src["coax_lf"] + u_vent[:n, None] * (src["vent_left"] + src["vent_right"])
     hf_i = u_hf[:, None] * coax_on("coax_hf")
 
     def extend(way: np.ndarray, key: str) -> np.ndarray:
@@ -241,5 +259,6 @@ def way_responses(
         f=f, obs=cab.obs,
         ways={"bass": bass_way, "coax_lf": extend(lf_i, "lf"), "coax_hf": extend(hf_i, "hf")},
         meta={"lf_join_mismatch_db": mismatch, "trusted_limit": tl, "u_lf": u_lf,
-              "hf_reference": "puck" if puck is not None else "piston"},
+              "hf_reference": "puck" if puck is not None else "piston",
+              "puck_blend": (tl / 2, tl) if puck is not None else None, "coax_far_h0_h180": far},
     )

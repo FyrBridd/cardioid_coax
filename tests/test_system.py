@@ -90,6 +90,8 @@ def test_bem_vent_sign_and_cabinet_shadowing(tmp_path):
     assert np.allclose(s, np.sqrt(2) * res.u_cone[:, None] * cone + vents)
     flipped = np.sqrt(2) * res.u_cone[:, None] * cone - vents
     assert np.all(fb(s) >= fb(flipped) + 1.0)
+    # Regression guard for the hard gate: the measured 5.9 / 5.7 dB at 150 / 200 Hz.
+    assert fb(s) == pytest.approx([5.9, 5.7], abs=1.5)
     # Shadowing at 150 Hz, per unit volume velocity.
     assert abs(cone[0, front]) > abs(cone[0, back])
     for v in (vl, vr):
@@ -121,3 +123,29 @@ def test_vent_scaled_section_keeps_the_cone_and_rescales_the_vents():
     assert np.allclose(u_nom[j[:n]], u_alt[j[:n]]) and not np.allclose(got[j], coax_section(w)[j])
     assert not np.allclose(got[F <= LF_JOIN[0]], coax_section(w)[F <= LF_JOIN[0]])
     assert np.array_equal(got[~m], coax_section(w)[~m])
+
+
+def test_far_pair_is_composed_like_the_coax_section():
+    fld = _piston_field(F)
+    o = fld.obs
+    for k, s in ((2, 0.3), (3, -0.2)):   # direction-dependent vents, louder to the rear
+        fld.p[:, k, :] = -fld.p[:, 0, :] * (0.5 + s * o.dirs[:, 1])[None, :]
+    i0, i180 = o.h_idx[o.h_angles == 0][0], o.h_idx[o.h_angles == -180][0]
+    fld.meta["far_h0_h180"] = fld.p[:, :, [i0, i180]]   # stand-in: the 2 m H 0/180 values
+    tl = 3000.0
+    w = way_responses(P, CX, B, L, fld, fld, F, trusted_limit=tl)
+    far = w.meta["coax_far_h0_h180"]
+    assert far.shape == (len(F), 2)
+    m = F <= tl
+    assert np.allclose(far[m], coax_section(w)[m][:, [i0, i180]], rtol=1e-12)
+    assert np.all(np.isnan(far[~m]))   # the cabinet field stops at the trusted limit
+    # Without the far points (synthetic fields, older caches) there is no pair.
+    del fld.meta["far_h0_h180"]
+    assert way_responses(P, CX, B, L, fld, fld, F, trusted_limit=tl).meta["coax_far_h0_h180"] is None
+
+
+def test_puck_blend_range_in_meta():
+    fld = _piston_field(F)
+    assert way_responses(P, CX, B, L, fld, fld, F, trusted_limit=3000.0).meta["puck_blend"] == (1500.0, 3000.0)
+    f = F[F <= 3000.0]
+    assert way_responses(P, CX, B, L, fld, None, f, trusted_limit=3000.0).meta["puck_blend"] is None

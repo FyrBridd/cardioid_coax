@@ -81,3 +81,43 @@ def test_presence_lift_trusted_ignores_data_above_the_limit():
     flat = _run(lambda d, f: np.ones(len(d)), limit=3000.0)["presence_lift/trusted"]
     dipped = _run(dip, limit=3000.0)["presence_lift/trusted"]
     assert dipped.value == pytest.approx(flat.value, abs=1e-6) and dipped.status == flat.status == "pass"
+
+
+def _scores(pattern, coax_pattern=None, limit=3000.0, **kw):
+    p = np.stack([pattern(O.dirs, f) for f in F]).astype(complex)
+    c = p if coax_pattern is None else np.stack([coax_pattern(O.dirs, f) for f in F]).astype(complex)
+    return {s.key + "/" + s.confidence: s
+            for s in score_all(F, p, c, O, spinorama(p, O), trusted_limit=limit, xo=FixedCrossover(), **kw)}
+
+
+def test_rejection_detail_names_the_worst_frequency():
+    # Cardioid whose rear leaks most at the grid point nearest 160 Hz.
+    f_bad = F[np.argmin(np.abs(F - 160.0))]
+    card = lambda d, f: 0.5 * (1 - d[:, 1]) + (0.2 if f == f_bad else 1e-2)
+    s = _scores(lambda d, f: np.ones(len(d)), coax_pattern=card)
+    assert s["cardioid_hard/trusted"].detail["worst_hz"] == pytest.approx(f_bad)
+    assert s["cardioid_hard/trusted"].detail["worst_angle"] == -180
+    assert s["rear_hemisphere/trusted"].detail["worst_hz"] == pytest.approx(f_bad)
+
+
+def test_band_scores_carry_the_puck_fraction():
+    s = _scores(lambda d, f: np.ones(len(d)), puck_blend=(1500.0, 3000.0))
+    ws = s["window_spread/trusted"].detail
+    part = F[(F >= 150) & (F <= 3000)]
+    assert ws["puck_fraction"] == pytest.approx(np.mean(part > 1500))
+    assert ws["puck_mean_weight"] == pytest.approx(np.mean(np.clip(np.log(part / 1500) / np.log(2), 0, 1)))
+    assert s["window_spread/low"].detail["puck_fraction"] == 1.0 and s["window_spread/low"].detail["puck_mean_weight"] == 1.0
+    assert s["cardioid_hard/trusted"].detail["puck_fraction"] == 0.0
+    assert s["presence_lift/trusted"].detail["puck_fraction"] == 1.0   # 2-3 kHz, all inside the blend
+    # Without a puck nothing is blended.
+    assert _scores(lambda d, f: np.ones(len(d)))["window_spread/trusted"].detail["puck_fraction"] == 0.0
+
+
+def test_cardioid_hard_far_is_info_and_optional():
+    far = np.stack([np.ones(len(F)), np.full(len(F), 10 ** (-12 / 20))], axis=1).astype(complex)
+    far[np.argmin(np.abs(F - 200))] = [1.0, 10 ** (-9 / 20)]   # worst point 9 dB
+    s = _scores(lambda d, f: np.ones(len(d)), coax_far=far)
+    r = s["cardioid_hard_far/trusted"]
+    assert r.value == pytest.approx(9.0) and r.status == "info" and r.band == (150.0, 300.0)
+    assert r.detail["worst_hz"] == pytest.approx(F[np.argmin(np.abs(F - 200))])
+    assert not any(k.startswith("cardioid_hard_far") for k in _scores(lambda d, f: np.ones(len(d))))
