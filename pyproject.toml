@@ -12,7 +12,7 @@ dependencies = [
     "bempp-cl>=0.4.2,<0.5",
     "pyopencl",
     "pocl-binary-distribution",
-    "gmsh>=4.15",
+    "gmsh @ https://gmsh.info/python-packages-dev-nox/gmsh/gmsh-4.15.0.dev1+nox-py2.py3-none-manylinux_2_24_x86_64.whl",
 ]
 
 [project.scripts]
@@ -24,6 +24,9 @@ dev = ["pytest", "pymupdf"]
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true  # gmsh no-X wheel: the PyPI wheel needs libGLU
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/speaker"]
