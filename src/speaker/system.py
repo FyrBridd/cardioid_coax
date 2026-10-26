@@ -80,11 +80,18 @@ def _field(fld: SourceField, name: str, ft: np.ndarray) -> np.ndarray:
 
 
 def _blend(a: np.ndarray, b: np.ndarray, t: np.ndarray) -> np.ndarray:
-    """a -> b: dB and phase linear in t, the phase step taken at its principal value."""
-    t = t.reshape(-1, *[1] * (a.ndim - 1))
-    with np.errstate(divide="ignore", invalid="ignore"):
-        mid = a * (b / a) ** t
-    return np.where(t <= 0, a, np.where(t >= 1, b, mid))
+    """a -> b along axis 0 (frequency): dB and phase linear in t.
+
+    The phase difference angle(b/a) is unwrapped along frequency across the band
+    0 < t < 1, anchored to its principal value at the band's low end.
+    """
+    out = np.where((t <= 0).reshape(-1, *[1] * (a.ndim - 1)), a, b)
+    band = (t > 0) & (t < 1)
+    if band.any():
+        r = b[band] / a[band]
+        tb = t[band].reshape(-1, *[1] * (a.ndim - 1))
+        out[band] = a[band] * np.abs(r) ** tb * np.exp(1j * tb * np.unwrap(np.angle(r), axis=0))
+    return out
 
 
 def _log_ramp(f: np.ndarray, lo: float, hi: float) -> np.ndarray:
@@ -134,7 +141,12 @@ def way_responses(
     # Internal grid: f up to the hold frequency, ending exactly on it when f goes past it.
     hold = puck is not None and f[-1] > PUCK_HOLD_F
     n_lo = int(np.searchsorted(f, PUCK_HOLD_F, side="right")) if hold else len(f)
-    fi = f if not hold or f[n_lo - 1] == PUCK_HOLD_F else np.append(f[:n_lo], PUCK_HOLD_F)
+    if not hold:
+        fi = f
+    elif f[n_lo - 1] == PUCK_HOLD_F:
+        fi = f[:n_lo]
+    else:
+        fi = np.append(f[:n_lo], PUCK_HOLD_F)
 
     # Datasheet volume velocities on a dense grid, minimum phase, then onto fi.
     g_lo, g_hi = min(f[0], _DS_RANGE[0]), max(f[-1], _DS_RANGE[1])

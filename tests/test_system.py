@@ -45,6 +45,28 @@ def test_lf_join_mismatch_reported():
     w = way_responses(P, CX, B, L, fld, fld, F, trusted_limit=3000.0)
     assert abs(w.meta["lf_join_mismatch_db"]) < 6.0
 
+def test_hold_anchors_on_12k_when_the_grid_contains_it():
+    def hf_axis(f):
+        fld = _piston_field(f)
+        w = way_responses(P, CX, B, L, fld, fld, f, trusted_limit=3000.0)
+        return 20 * np.log10(np.abs(w.ways["coax_hf"][-2:, w.obs.h_idx[w.obs.h_angles == 0][0]]))
+    exact = hf_axis(np.array([1000.0, 5000.0, 11000.0, 12000.0, 14000.0, 16000.0]))
+    near = hf_axis(np.array([1000.0, 5000.0, 11000.0, 11999.999, 14000.0, 16000.0]))
+    assert np.allclose(exact, near, atol=0.01)
+
+def test_cab_to_puck_blend_phase_is_continuous_through_pi():
+    f = np.geomspace(100, 16000, 400)   # ~54 points per octave: the smooth blend moves < 4° per step
+    cab = _piston_field(f)
+    # The puck leads the cabinet by a phase that crosses pi inside the 1.5-3 kHz blend band.
+    ramp = np.clip(np.log(f / 1500.0) / np.log(2.0), 0.0, 1.0)
+    puck = _piston_field(f)
+    puck.p[:] *= np.exp(1j * np.pi * (0.8 + 0.4 * ramp))[:, None, None]
+    w0 = way_responses(P, CX, B, L, cab, cab, f, trusted_limit=3000.0)
+    w1 = way_responses(P, CX, B, L, cab, puck, f, trusted_limit=3000.0)
+    i0 = w0.obs.h_idx[w0.obs.h_angles == 0][0]
+    r = w1.ways["coax_hf"][:, i0] / w0.ways["coax_hf"][:, i0]
+    assert np.degrees(np.abs(np.angle(r[1:] / r[:-1]))).max() < 10.0
+
 # Measured at R=190 Pa·s/m: BEM coax-section front/back 5.9/5.7 dB against lumped
 # front_back 22.3/24.0 dB at 150/200 Hz. The cabinet shadows the cone from the rear and the
 # vents from the front, which the free-field lumped model cannot see. The 3D model is the
