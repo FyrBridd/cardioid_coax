@@ -5,9 +5,7 @@ from speaker.curves import load_curve, interp_db, minimum_phase, smooth
     ("bms_10c262_lf_spl", 200, 95.0, 1.0), ("bms_10c262_lf_spl", 1000, 93.5, 1.0),
     ("bms_10c262_lf_spl", 1600, 89.5, 1.0), ("bms_10c262_lf_spl", 2700, 96.0, 1.0),
     ("bms_10c262_hf_spl", 2000, 111.0, 1.0), ("bms_10c262_hf_spl", 10000, 103.5, 1.5),
-    pytest.param("bms_10c262_lf_imp", 70, 95.0, 4.0, marks=pytest.mark.xfail(strict=True, reason=(
-        "95 ohm is the apex (~96 ohm at ~67 Hz); 70 Hz is on the steep flank, where the "
-        "trace gives ~88 ohm and the datasheet's own cursor reads 90.49 ohm at 69.71 Hz"))),
+    ("bms_10c262_lf_imp", 69.7118, 90.49, 2.0),  # datasheet cursor reading; peak ~95 ohm at ~66 Hz
     ("bms_10c262_lf_imp", 300, 7.5, 1.0),
     ("bms_10c262_hf_imp", 750, 26.0, 2.0), ("bms_10c262_hf_imp", 5000, 8.5, 1.0),
 ])
