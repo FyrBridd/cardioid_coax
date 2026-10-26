@@ -1,0 +1,74 @@
+import numpy as np, pytest
+from speaker.bem import analytic
+from speaker.bem.run import SourceField, observation_set
+from speaker.cardioid import simulate
+from speaker.drivers import load_driver
+from speaker.layout import cardioid_params, compute_layout
+from speaker.params import load_params
+from speaker.system import way_responses, coax_section, LF_JOIN
+from speaker.curves import load_curve, interp_db
+
+P, CX, B = load_params(), load_driver("bms_10c262"), load_driver("dayton_rss265ho_44")
+L = compute_layout(P, CX, B)
+F = np.geomspace(100, 16000, 120)
+NAMES = ("coax_lf", "coax_hf", "vent_left", "vent_right", "bass_lower", "bass_upper")
+
+def _piston_field(f, r=2.0, scale=1.0):
+    o = observation_set(r)
+    pp = np.array([analytic.baffled_piston_on_axis(x, CX.diaphragm_d / 2, r) for x in f]) * scale
+    p = np.broadcast_to(pp[:, None, None], (len(f), len(NAMES), len(o.dirs))).copy()
+    p[:, 2:4, :] = 0.0   # vents silent, so coax_lf is the cone alone
+    return SourceField(f, NAMES, o, p, {"axis_1m": np.stack([np.array([analytic.baffled_piston_on_axis(x, CX.hf_exit_d / 2, 1.0) for x in f])] * 2, 1)})
+
+def test_deembedding_reproduces_datasheet_at_2m():
+    fld = _piston_field(F)
+    w = way_responses(P, CX, B, L, fld, fld, F, trusted_limit=3000.0)
+    m = (F > 600) & (F < 2500)
+    got = 20 * np.log10(np.abs(w.ways["coax_lf"][m, w.obs.h_idx[w.obs.h_angles == 0][0]]) / 20e-6 / np.sqrt(2))
+    # Vents are silent in this field: the cone must match the datasheet minus 6 dB (1 m -> 2 m) within 1 dB.
+    want = interp_db(load_curve("bms_10c262_lf_spl"), F[m]) - 20 * np.log10(2)
+    assert np.abs(got - want).max() < 1.0
+
+def test_blend_moves_monotonically_from_cabinet_to_puck():
+    cab, puck = _piston_field(F), _piston_field(F, scale=2.0)   # puck 6 dB hotter everywhere
+    w0 = way_responses(P, CX, B, L, cab, cab, F, trusted_limit=3000.0)
+    w1 = way_responses(P, CX, B, L, cab, puck, F, trusted_limit=3000.0)
+    i0 = w0.obs.h_idx[w0.obs.h_angles == 0][0]
+    d = 20 * np.log10(np.abs(w1.ways["coax_hf"][:, i0]) / np.abs(w0.ways["coax_hf"][:, i0]))
+    assert np.allclose(d[F < 1500], 0, atol=0.01) and np.allclose(d[(F > 3000) & (F < 12000)], 6.02, atol=0.05)
+    m = (F >= 1500) & (F <= 3000)
+    assert np.all(np.diff(d[m]) >= -1e-9)
+    assert np.all(w1.ways["bass"][F > 3000] == 0)
+
+def test_lf_join_mismatch_reported():
+    fld = _piston_field(F)
+    w = way_responses(P, CX, B, L, fld, fld, F, trusted_limit=3000.0)
+    assert abs(w.meta["lf_join_mismatch_db"]) < 6.0
+
+# Measured at R=190 Pa·s/m: BEM coax-section front/back 5.9/5.7 dB against lumped
+# front_back 22.3/24.0 dB at 150/200 Hz. The cabinet shadows the cone from the rear and the
+# vents from the front, which the free-field lumped model cannot see. The 3D model is the
+# authority on the cardioid (spec §4/§8), so this test pins the vent sign and the shadowing
+# instead of agreement with the lumped model.
+@pytest.mark.bem
+def test_bem_vent_sign_and_cabinet_shadowing(tmp_path):
+    from speaker.bem.run import cabinet_field
+    from speaker.params import DEFAULT_PATH
+    f = np.array([150.0, 200.0])
+    cab = cabinet_field(P, CX, B, f, params_text=DEFAULT_PATH.read_text(), h_max=0.06, cache_dir=tmp_path)
+    w = way_responses(P, CX, B, L, cab, None, f, trusted_limit=3000.0)
+    o = w.obs
+    front, back = o.h_idx[o.h_angles == 0][0], o.h_idx[o.h_angles == -180][0]
+    fb = lambda s: 20 * np.log10(np.abs(s[:, front]) / np.abs(s[:, back]))
+    # Below LF_JOIN the coax LF strengths are the lumped ones, RMS -> peak.
+    res = simulate(CX, cardioid_params(P, L, CX), f, 2.83)
+    cone, vl, vr = (cab.p[:, cab.names.index(n), :] for n in ("coax_lf", "vent_left", "vent_right"))
+    vents = np.sqrt(2) * res.u_vent[:, None] / 2 * (vl + vr)
+    s = coax_section(w)
+    assert np.allclose(s, np.sqrt(2) * res.u_cone[:, None] * cone + vents)
+    flipped = np.sqrt(2) * res.u_cone[:, None] * cone - vents
+    assert np.all(fb(s) >= fb(flipped) + 1.0)
+    # Shadowing at 150 Hz, per unit volume velocity.
+    assert abs(cone[0, front]) > abs(cone[0, back])
+    for v in (vl, vr):
+        assert abs(v[0, back]) > abs(v[0, front])
