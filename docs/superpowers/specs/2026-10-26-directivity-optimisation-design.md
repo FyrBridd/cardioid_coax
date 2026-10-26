@@ -147,11 +147,11 @@ still used to tune the vent resistance. Where the two disagree by more than
 **Scoring band and confidence** *(my call)*:
 
 - **Ranking** uses only the band where the 3D results are trusted (§8),
-  about 3–4 kHz and below.
+  2.85 kHz and below (measured 2026-10-26, §8).
 - **Above that limit**, the scores (including most of the 2–5 kHz check) are
   computed and shown in the report with the low-confidence marker. They don't
   rank variants.
-- **Why the solver isn't pushed to 5 kHz.** Above about 3–4 kHz the coax's
+- **Why the solver isn't pushed to 5 kHz.** Above the 3D limit the coax's
   own cone and horn decide the result. Their profile is guessed until the
   driver is measured, so a finer 3D mesh would add cost without adding
   trust.
@@ -237,7 +237,8 @@ params file. Parameters that don't exist yet are added there.
     needs no new 3D run. Only a change of shape does.
 - **Frequency range and angles:**
   - 3D run from 50 Hz to the highest frequency the mesh supports on this
-    machine. Expected to be about 3–4 kHz (16 cores, 30 GB RAM, no GPU).
+    machine. Measured at 2.85 kHz on 2026-10-26 (16 cores, 30 GB RAM, no
+    GPU), capped by memory: the 4 kHz check mesh needs about 24 GB (§8).
     Mesh density and symmetry tricks are the builder's choice.
   - Horizontal and vertical planes, 0–360° in 5° steps. Plus enough of the
     sphere for sound power (main spec §7.3 asks for 10° or finer).
@@ -355,8 +356,10 @@ round's variants.
 
 Marked on every curve and score:
 
-- **Trusted:** below the 3D limit (about 3–4 kHz), for the shape effects:
-  baffle, edges, cardioid, crossover-region lobing.
+- **Trusted:** below the 3D limit (2.85 kHz, measured 2026-10-26 by the mesh
+  check; capped by memory, since the 4 kHz check mesh needs about 24 GB
+  against a 22 GB budget), for the shape effects: baffle, edges, cardioid,
+  crossover-region lobing.
 - **Estimated:**
   - The cardioid vent resistance as built. The felt is unknown, so the
     report shows a ±30% resistance band *(my call)*.
