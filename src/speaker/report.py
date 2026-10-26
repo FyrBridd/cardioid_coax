@@ -27,7 +27,9 @@ HALF_SPACE_DB = 20 * math.log10(2)  # half-space (2 pi) over free-field (4 pi) l
 N_BASS_PARALLEL = 2  # bass drivers in parallel behind the one shared inductor
 POLAR_FREQS = (150, 200, 300, 450, 600)
 FB_TARGET_DB = 10.0
-FB_BAND = (150.0, 300.0)
+FB_BAND = (150.0, 300.0)  # hard requirement
+FB_AIM_DB = 6.0
+FB_AIM_BAND = (300.0, 500.0)  # aim: reported, never traded for 150-300 Hz margin
 
 
 def _save(fig, path: Path) -> None:
@@ -62,6 +64,18 @@ def fb_crossing(
         return float(f_min)
     f0, f1, y0, y1 = ff[i - 1], ff[i], yy[i - 1], yy[i]
     return float(f0 + (y0 - threshold) / (y0 - y1) * (f1 - f0))
+
+
+def cardioid_warnings(fb_min_hard: float, fb_min_aim: float) -> list[str]:
+    """Warnings for the as-built chamber's minimum front/back in each band."""
+    w = []
+    if fb_min_hard < FB_TARGET_DB:
+        w.append(f"as-built min front/back over {FB_BAND[0]:.0f}-{FB_BAND[1]:.0f} Hz is "
+                 f"{fb_min_hard:.1f} dB, below the {FB_TARGET_DB:g} dB hard requirement")
+    if fb_min_aim < FB_AIM_DB:
+        w.append(f"as-built min front/back over {FB_AIM_BAND[0]:.0f}-{FB_AIM_BAND[1]:.0f} Hz is "
+                 f"{fb_min_aim:.1f} dB, below the {FB_AIM_DB:g} dB aim")
+    return w
 
 
 def in_room_bass(p: Params, layout, bass, vb: float, f: np.ndarray, surfaces=ALL) -> np.ndarray:
@@ -132,14 +146,14 @@ def build(params_path: Path | None, out_dir: Path) -> Path:
     _save(fig, plots / "bass_in_room.png")
 
     # ---- Cardioid ----
-    # Two chambers: the target net volume (needs the filler, which is NOT in the
-    # CAD) and the as-built CAD chamber (gross less coax displacement). Each is
-    # tuned separately.
+    # Two chambers: as built (with the printed fillers) and empty (no fillers,
+    # for comparison). Each is tuned over the 150-300 Hz band only.
     cp0 = cardioid_params(p, layout, coax)
     f_fb = np.geomspace(100, 1000, 300)
     f_band = np.geomspace(*FB_BAND, 100)
+    f_aim = np.geomspace(*FB_AIM_BAND, 100)
     cases = {}
-    for key, vol in (("target", layout.coax_chamber_net), ("as_built", layout.coax_chamber_as_built)):
+    for key, vol in (("as_built", layout.coax_chamber_as_built), ("empty", layout.coax_chamber_empty)):
         q = dataclasses.replace(cp0, chamber_volume=vol)
         r = tune_resistance(coax, q)
         q = dataclasses.replace(q, vent_resistance=r)
@@ -150,10 +164,11 @@ def build(params_path: Path | None, out_dir: Path) -> Path:
             "cp": q,
             "fb": fb_c,
             "fb_min": float(np.min(front_back(simulate(coax, q, f_band, drive.amp_v_rms), q))),
+            "fb_min_aim": float(np.min(front_back(simulate(coax, q, f_aim, drive.amp_v_rms), q))),
             "cross": fb_crossing(f_fb, fb_c),
             "exc150": float(simulate(coax, q, np.array([150.0]), drive.amp_v_rms).excursion[0]),
         }
-    cp, r_tuned = cases["target"]["cp"], cases["target"]["r"]
+    cp, r_tuned = cases["as_built"]["cp"], cases["as_built"]["r"]
     f_pol = np.array(POLAR_FREQS, dtype=float)
     ang = np.linspace(-180, 180, 361)
     pol = polar(simulate(coax, cp, f_pol, drive.amp_v_rms), cp, ang)
@@ -163,19 +178,22 @@ def build(params_path: Path | None, out_dir: Path) -> Path:
         ax.plot(np.radians(ang), np.maximum(row, -40), label=f"{fi} Hz")
     ax.set_theta_zero_location("N")
     ax.set_ylim(-40, 0)
-    ax.set_title(f"Horizontal polar, target {cases['target']['vol'] * 1000:.1f} L chamber\n"
+    ax.set_title(f"Horizontal polar, as-built {cases['as_built']['vol'] * 1000:.1f} L chamber\n"
                  f"(dB, tuned R = {r_tuned:.0f} Pa s/m)")
     ax.legend(loc="lower left", bbox_to_anchor=(1.0, 0.0))
     _save(fig, plots / "cardioid_polar.png")
 
     fig, ax = plt.subplots(figsize=(8, 4.5))
-    ax.semilogx(f_fb, cases["target"]["fb"],
-                label=f"target {cases['target']['vol'] * 1000:.1f} L net (R {cases['target']['r']:.0f} Pa s/m)")
-    ax.semilogx(f_fb, cases["as_built"]["fb"], "--",
-                label=f"as built {cases['as_built']['vol'] * 1000:.1f} L, no filler "
+    ax.semilogx(f_fb, cases["as_built"]["fb"],
+                label=f"as built {cases['as_built']['vol'] * 1000:.1f} L (fillers) "
                       f"(R {cases['as_built']['r']:.0f} Pa s/m)")
-    ax.axhline(10, color="grey", ls=":", label="10 dB")
-    ax.axvspan(150, 300, color="C1", alpha=0.12, label="150-300 Hz target band")
+    ax.semilogx(f_fb, cases["empty"]["fb"], "--",
+                label=f"no fillers {cases['empty']['vol'] * 1000:.1f} L "
+                      f"(R {cases['empty']['r']:.0f} Pa s/m)")
+    ax.axhline(FB_TARGET_DB, color="grey", ls=":", label=f"{FB_TARGET_DB:g} dB")
+    ax.axhline(FB_AIM_DB, color="grey", ls="-.", label=f"{FB_AIM_DB:g} dB")
+    ax.axvspan(*FB_BAND, color="C1", alpha=0.12, label="150-300 Hz hard requirement")
+    ax.axvspan(*FB_AIM_BAND, color="C2", alpha=0.10, label="300-500 Hz aim")
     ax.axvspan(400, 1000, color="grey", alpha=0.12, label="needs measurement")
     ax.set_xlabel("Frequency (Hz)")
     ax.set_ylabel("Front/back (dB)")
@@ -223,12 +241,17 @@ def build(params_path: Path | None, out_dir: Path) -> Path:
             f"  - Minimum front/back over 150-300 Hz: {fb_min:.1f} dB"
             + ("" if fb_min >= FB_TARGET_DB
                else "  (BELOW the 10 dB target - design finding, parameters not tuned to hide it)"),
+            f"  - Minimum front/back over 300-500 Hz: {cs['fb_min_aim']:.1f} dB"
+            + ("" if cs["fb_min_aim"] >= FB_AIM_DB else "  (BELOW the 6 dB aim)"),
             f"  - Lowest frequency above 150 Hz where F/B first drops below 10 dB: {cross_text}",
             f"  - Coax excursion at 150 Hz at {drive.amp_v_rms:g} V rms: {exc150 * 1000:.2f} mm peak "
             f"vs Xmax {coax.xmax * 1000:.2f} mm ({exc150 / coax.xmax * 100:.0f}% of Xmax)",
         ]
 
     h_mm = layout.height * 1000
+    cardio_warns = cardioid_warnings(cases["as_built"]["fb_min"], cases["as_built"]["fb_min_aim"])
+    fl = layout.fillers
+    bw, bd, bh = (1000 * (hi - lo) for lo, hi in zip(fl.block_min, fl.block_max))
     lines = [
         "# Speaker design summary",
         "",
@@ -249,13 +272,14 @@ def build(params_path: Path | None, out_dir: Path) -> Path:
         "",
         "## Cardioid",
         "",
-        f"- Target chamber (target net volume {layout.coax_chamber_net * 1000:.2f} L; "
-        "needs the filler, see Cabinet):",
-        *cardioid_lines(cases["target"]),
-        f"- As built (CAD chamber with no filler: net {layout.coax_chamber_as_built * 1000:.2f} L = "
-        "gross less coax displacement):",
+        f"- As built (with printed fillers: net {layout.coax_chamber_as_built * 1000:.2f} L = "
+        f"gross less coax displacement less {layout.filler_volume * 1000:.2f} L of fillers):",
         *cardioid_lines(cases["as_built"]),
-        "- The polar plot shows the target chamber; front_back.png shows both.",
+        f"- Without fillers (for comparison: net {layout.coax_chamber_empty * 1000:.2f} L):",
+        *cardioid_lines(cases["empty"]),
+        "- Cardioid warnings: " + ("none" if not cardio_warns else ""),
+        *(f"  - {w}" for w in cardio_warns),
+        "- The polar plot shows the as-built chamber; front_back.png shows both.",
         "",
         "## Room",
         "",
@@ -270,12 +294,13 @@ def build(params_path: Path | None, out_dir: Path) -> Path:
         "## Cabinet",
         "",
         f"- External H x W x D: {h_mm:.0f} x {p.cabinet.width * 1000:.0f} x {p.cabinet.depth * 1000:.0f} mm",
-        f"- Coax chamber: gross {layout.coax_chamber_gross * 1000:.2f} L, as built (gross less coax "
-        f"displacement) {layout.coax_chamber_as_built * 1000:.2f} L, target net "
-        f"{layout.coax_chamber_net * 1000:.2f} L",
-        f"- Coax chamber filler: {layout.filler_volume * 1000:.2f} L is NOT in the CAD. The builder must add "
-        "it (e.g. glued-in blocks) to reach the target net volume; without it the chamber is the "
-        "as-built volume and the cardioid result is the as-built one.",
+        f"- Coax chamber: gross {layout.coax_chamber_gross * 1000:.2f} L, empty (gross less coax "
+        f"displacement, no fillers) {layout.coax_chamber_empty * 1000:.2f} L, as built "
+        f"{layout.coax_chamber_as_built * 1000:.2f} L",
+        f"- Coax chamber fillers (printed ABS, in the CAD): 4 corner pieces {fl.corner_volume * 1000:.2f} L "
+        f"(y {fl.corner_y[0] * 1000:.0f}-{fl.corner_y[1] * 1000:.0f} mm), rear block "
+        f"{bw:.0f} x {bd:.0f} x {bh:.0f} mm = {fl.block_volume * 1000:.2f} L; as-built net "
+        f"{layout.coax_chamber_as_built * 1000:.2f} L (target {layout.coax_chamber_net * 1000:.2f} L)",
         f"- Bass chamber: gross {layout.bass_gross * 1000:.2f} L, net {layout.bass_net * 1000:.2f} L (both drivers)",
         "- Layout warnings: " + ("none" if not layout.warnings else ""),
     ]
@@ -297,7 +322,7 @@ def build(params_path: Path | None, out_dir: Path) -> Path:
         "- SBIR, seat-wall and floor-bounce nulls: high (geometry only, first-order)",
         "- Axial modes: high (rigid-wall rectangular room)",
         "- In-room bass response: needs-measurement (rigid, fully reflective boundaries)",
-        "- CAD / volumes: geometry high; net volumes medium (filler not modelled; displacement estimated)",
+        "- CAD / volumes: geometry high; net volumes medium (displacement estimated)",
         "",
     ]
     summary = out_dir / "summary.md"

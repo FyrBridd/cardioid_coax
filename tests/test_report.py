@@ -7,7 +7,7 @@ from speaker.bass import sealed_spl
 from speaker.drivers import load_driver
 from speaker.layout import compute_layout
 from speaker.params import load_params
-from speaker.report import fb_crossing, in_room_bass
+from speaker.report import cardioid_warnings, fb_crossing, in_room_bass
 
 P = load_params(); CX = load_driver("bms_10c262"); B = load_driver("dayton_rss265ho_44")
 L = compute_layout(P, CX, B)
@@ -52,3 +52,10 @@ def test_in_room_free_field_is_6db_below_half_space():
     f = np.array([20.0])
     free = in_room_bass(P, L, B, L.bass_net / 2, f, surfaces=[])[0]
     assert free == pytest.approx(_half_space_coherent(20.0) - 6.02, abs=0.1)
+
+
+def test_cardioid_warnings():
+    assert cardioid_warnings(12.0, 7.0) == []
+    w = cardioid_warnings(9.4, 5.2)
+    assert len(w) == 2 and "9.4 dB" in w[0] and "10 dB hard requirement" in w[0]
+    assert "5.2 dB" in w[1] and "6 dB aim" in w[1]
