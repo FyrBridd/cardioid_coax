@@ -236,13 +236,18 @@ vented or larger box).
   so the vents go on the **side panels near the rear**, as an array of several
   small slots per side. Rear-panel vents would be loaded by the wall.
   *(Builder to confirm by simulation.)*
-- **Cardioid target** *(my call)*:
-  - At least 10 dB rear (180°) rejection from 150 to 600 Hz.
+- **Cardioid target** *(revised 2026-10-26, agreed with the owner)*:
+  - **Hard requirement:** at least 10 dB rear (180°) rejection from 150 to
+    300 Hz, in the lumped model, for the chamber *as built*.
+  - **Aim:** at least 6 dB from 300 to 500 Hz.
+  - The original "10 dB to 600 Hz" target is not reachable with a side-vented
+    10 L chamber in this cabinet. The aim above replaces it.
   - Rejection across the rear hemisphere (about ±120–180°) matters too,
     because of the nearby side walls, so a hypercardioid-leaning pattern is
     acceptable.
   - If the coax's ±5.5 mm Xmax can't support this at 150 Hz, move the
     bass-to-coax crossover up towards 200 Hz rather than weaken the rejection.
+- **Coax chamber fillers and vents** are decided in §7.1.1.
 - **Lower section: sealed bass.** Two Daytons, target 25–30 L net each
   (50–60 L total). Use as much of this volume as the cabinet allows *(my
   call)*, because it lowers Qtc and leaves room for the passive inductor's
@@ -263,6 +268,110 @@ vented or larger box).
 - **Bracing and damping** are set by panel-resonance simulation, with bracing
   that doesn't block the cardioid path or the bass drivers' rear volume.
 - **Terminal panel** on the rear, supporting the three modes (§7.2).
+
+### 7.1.1 Coax chamber: fillers and vents (decided 2026-10-26)
+
+**Why.** Plan 1 showed that the upper section as drawn has about 18.8 L net
+behind the coax. That gives only about 5 dB rear rejection over 150–300 Hz.
+A lumped-model sweep compared the options. The owner chose to **keep the single
+box and fill it down to 10 L with printed fillers**, together with doubling the
+vent area. The modelled result is about 25 dB minimum over 150–300 Hz and about
+8 dB minimum to 500 Hz. Coax excursion stays at about 1.8 mm at 150 Hz and
+25 Vrms. Rejected alternatives:
+- a partition behind the coax, which clashes with the side vents;
+- a shallower stepped upper section (best in the model, but it changes the look).
+
+**Ranking of levers** (from the sweep, for anyone re-tuning): vent area has
+the biggest effect. Next is placing the vents as far behind the cone as
+possible. Smaller chamber volume comes third.
+
+**Vents** *(decided)*:
+- 12 slots per side, each 100 mm long (front-to-back) and 10 mm high, at a
+  22 mm vertical pitch. Centred 270 mm from the front face and at the coax
+  centre height, as now.
+- Total open area: 24,000 mm² for both sides together.
+- Slot fill resistance is re-tuned by the model. It is expected to be around
+  190 Pa·s/m.
+- *(My call.)* The tuner runs on every build:
+  - It maximises the minimum rejection over **150–300 Hz only**, which is
+    the hard requirement.
+  - It never gives up 150–300 Hz margin to chase the 300–500 Hz aim. A miss
+    on the aim is reported as a warning, not traded for.
+  - The tuned value is reported in the summary, not written back to the
+    params file.
+- The default parameters change accordingly: `slots_per_side = 12`, with
+  `specific_resistance_rayl` set to the tuned value.
+
+**Fillers.** There are two kinds, both 3D-printed:
+
+1. **Four corner pieces** *(decided)*:
+   - One in each corner of the upper section's cross-section, outside a
+     cylinder of the coax frame diameter plus clearance, coaxial with the coax.
+   - The concave inner face keeps the full frame-diameter sweep clear, so the
+     coax can be slid in from the back and bolted to the baffle with all
+     fillers in place.
+   - Each runs from the back face of the baffle to **15 mm in front of the
+     vent slots**. With the current numbers, the slots start at y = 220 mm,
+     so the pieces end at y = 205 mm.
+   - The pieces don't extend into the vent band, so the air path from the
+     back of the cone to every slot stays open.
+   - Together they give about 5 L.
+2. **One rear block** *(decided)*:
+   - Mounted on the inside of the back panel, behind the magnet. It comes out
+     with the back panel.
+   - It fills the rest of the volume needed to reach the 10 L net target
+     (about 4 L at the current numbers).
+   - It is **sized by the model, not fixed**: its size is solved so that the
+     chamber's net volume, measured from the geometry, equals
+     `coax_chamber_net_volume_l`.
+   - Clearances:
+     - at least 10 mm behind the magnet;
+     - at least 25 mm between the block and each side panel along the whole
+       vent band, so the air path to the slots is not throttled.
+   - If it can't be made big enough within those clearances, the build fails
+     validation with a clear message. The volume is never quietly missed.
+
+**Access** *(decided)*:
+- The back panel over the coax chamber is **removable**, and is how the coax
+  is installed and serviced.
+- It must seal airtight when closed, for example with a gasket.
+- Its fasteners and the gasket detail are left to Plan 3, together with the
+  other fastening questions.
+
+**Print and material** *(decided)*:
+- The fillers are **ABS**, printed by the owner's print service. It offers
+  build volumes up to 580 × 480 × 480 mm in ABS, or 250 mm cubes in other
+  materials. ABS softens at about 95–100 °C, far above anything the chamber
+  will see.
+- The parts must be **airtight**, because air inside them would still count
+  as chamber volume. Print with at least 4 perimeters, at least 5 solid
+  layers top and bottom, and about 20% infill. Seal the surface by acetone
+  vapour smoothing or by brushing on ABS slurry.
+- At the current numbers every piece is under 250 mm in every direction, so
+  no splitting is needed. If a re-tune makes a part larger than 250 mm, it
+  can still be one ABS part up to the larger build volume.
+- Fixing:
+  - The corner pieces are bonded to the panels with PU adhesive.
+  - The rear block is screwed to the back panel from outside.
+
+**What the software must do** *(decided)*:
+- Model the fillers as real CAD parts, and export them as STEP and STL for the
+  print service. They carry the same `_PROVISIONAL` suffix as the other files
+  until the drivers are measured, because their inner faces depend on the
+  coax frame and magnet sizes.
+- Compute the chamber's as-built net volume from the geometry. That is the
+  upper-section interior less the coax displacement less the filler solids.
+  Feed this volume to the cardioid model.
+  - *(My call.)* Each filler subtracts its full outer envelope, because the
+    parts are sealed.
+  - *(My call.)* The rear block is solved to hit the target within ±0.05 L.
+- The summary reports:
+  - the as-built volume;
+  - the tuned resistance;
+  - the minimum rear rejection over 150–300 Hz and over 300–500 Hz.
+
+  It warns if the result misses the hard requirement or the aim.
+- This replaces Plan 1's ruling R9, under which the filler was not modelled.
 
 ### 7.2 Drive modes and crossover topology
 
@@ -333,8 +442,11 @@ which results are high-confidence and which need measurement.
   modelling) and the repo layout.
 - Panel material and thickness. *(My suggestion: 18 mm birch ply or MDF, with a
   doubled or thicker front baffle for the rear-mount flare.)*
-- Exact cardioid chamber volume, vent geometry, vent location (side vs rear)
-  and resistive material, all from simulation.
+- The resistive material for the vents, chosen to match the tuned
+  resistance. Chamber volume, vent geometry and vent location are now decided
+  in §7.1.1.
+- The exact cross-section shape of the filler pieces, within the clearances
+  in §7.1.1.
 - Bass chamber split (shared or separate) and the vertical positions of the
   two bass drivers.
 - Bracing pattern and damping material placement.
