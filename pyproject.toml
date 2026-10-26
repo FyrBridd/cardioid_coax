@@ -9,13 +9,17 @@ dependencies = [
     "matplotlib",
     "cadquery>=2.8",
     "ezdxf>=1.4",
+    "bempp-cl>=0.4.2,<0.5",
+    "pyopencl",
+    "pocl-binary-distribution",
+    "gmsh>=4.15",
 ]
 
 [project.scripts]
 speaker = "speaker.cli:main"
 
 [dependency-groups]
-dev = ["pytest"]
+dev = ["pytest", "pymupdf"]
 
 [build-system]
 requires = ["hatchling"]
@@ -27,3 +31,9 @@ packages = ["src/speaker"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = ["bem: runs the BEM solver (slow)"]
+addopts = "-m 'not bem'"
+filterwarnings = [
+    # bempp-cl 0.4.2 imports LinearOperator from a deprecated scipy namespace.
+    "ignore:Please import `LinearOperator`:DeprecationWarning:bempp_cl",
+]
