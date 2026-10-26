@@ -87,8 +87,8 @@ These would make it a failure even if the scores looked good:
   averages away a narrow problem. The report always shows the curves behind
   every score.
 - **Confidence the simulation hasn't earned.** A geometry chosen because of
-  detail above about 4 kHz, where the coax's horn behaviour is guessed
-  (§8), presented as if it were solid.
+  detail above the 3D limit (2.85 kHz), where the coax's horn behaviour is
+  guessed (§8), presented as if it were solid.
 - **Breaking the main spec's anti-goals** in search of a better score:
   - visible driver frames;
   - a grille;

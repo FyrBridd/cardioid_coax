@@ -104,29 +104,34 @@ is at least 10 dB. The worst point is 300 Hz, straight behind (180°).
 It is not a near-field effect of the 2 m distance. At 50 m the same number
 is 5.6 dB.
 
-The vent felt will not fix it on its own:
+The vent felt probably will not fix it on its own:
 
 - Across the ±30% felt spread the score moves from 3.5 to 6.2 dB.
-- Earlier sweeps of the vent resistance with the same 3D fields found that
+- From the Task 7 investigation (2026-10-26), not reproduced in this run's
+  outputs: sweeps of the vent resistance with the 3D fields found that
   R ≈ 400–500 Pa·s/m gives about 13 dB at 150 Hz, but only about 8.6 dB at
   250 Hz. (The current R is 190 Pa·s/m.)
 
-So plan 2 has to look at the vent position, area and shape, not just the
-felt.
+So plan 2 should probably look at the vent position, area and shape, not
+just the felt.
 
 **Why the simple model was so far off.** The lumped (free-field) model
-predicted 22–24 dB in this band. It differs from the 3D result by up to
-19.4 dB over 150–500 Hz. Three things explain most of the gap:
+differs from the 3D result by up to 19.4 dB over 150–500 Hz (report). The
+following come from the Task 7 investigation (2026-10-26), not reproduced in
+this run's outputs: the lumped model predicted 22–24 dB in the hard band, and
+there are three likely causes of the gap:
 
-- The cabinet shadows and diffracts the vent sound. The vents act as if they
-  were about 0.43 m from the cone, not 0.234 m.
+- The cabinet shadows and diffracts the vent sound. The vents seem to act as
+  if they were about 0.43 m from the cone, not 0.234 m.
 - In 3D the cone radiates from the mouth of its cavity, not from the baffle
   plane the lumped model assumes.
 - The score is taken at 2 m, not in the far field.
 
 **What the vents do now.** I split the coax section into its two parts using
 the cached 3D fields (the cone's term and the vents' term of the same
-solution, at 2 m, before the crossover):
+solution, at 2 m, before the crossover). A scratch script produced this
+table (`vent_check.py`, not committed). It loads the cached BEM fields
+through the project's own functions and does not change any score:
 
 | Frequency | Cone alone: front − back | Cone + vents: front − back |
 |---|---|---|
@@ -137,18 +142,21 @@ solution, at 2 m, before the crossover):
 | 400 Hz | 7.1 dB | 5.5 dB |
 | 500 Hz | 9.5 dB | 7.0 dB |
 
-Most of today's rear rejection comes from the cabinet shading the cone. The
-vents add 2.7 dB at 150 Hz, almost nothing at 300 Hz, and make things worse
-from about 350 Hz up. Above about 180 Hz the vent sound adds to the cone
-sound behind the speaker instead of cancelling it. Its timing at the rear is
-wrong, which is a position and path problem, not a felt problem. (This split
-is not in the report. I computed it from the cached fields with a short
-script; it does not change any score.)
+This suggests that most of today's rear rejection comes from the cabinet
+shading the cone. The vents add 2.7 dB at 150 Hz, almost nothing at 300 Hz,
+and reduce it from about 350 Hz up. Above about 180 Hz the vent term raises
+the level behind the speaker instead of cancelling it. That suggests the
+vents' timing at the rear is wrong. This is more likely a position or path
+problem than a felt problem. It is a question for plan 2, not a settled
+finding. (This split is not in the report.)
 
 ### 2. The bass needs about +14 dB of gain to match the coax
 
-The crossover matches the bass to the coax LF with +14.2 dB of gain. This is
-real, not a bug.
+The crossover matches the bass to the coax LF with +14.2 dB of gain. The
+arithmetic checks out. The datasheet sensitivities, plus the bass radiating
+into full space while the coax is closer to half space, explain most of it.
+But part of the 14 dB may come from the suspect 550–650 Hz coax peak (open
+question 1), or from the de-embedding double-count.
 
 - Each Dayton RSS265HO-44 is 84.5 dB at 2.83 V and 1 m (datasheet). The pair
   in parallel is about 6 dB more.
@@ -159,9 +167,8 @@ real, not a bug.
 
 In a passive design the coax would be padded down by about 14 dB. With
 active drive, the bass amplifier channel needs that much more gain, or the
-coax channels run 14 dB down. Part of the 14 dB may come from the coax
-cavity peak described under "Other things the plots show" below. If that
-peak is overstated, the true gap is a few dB smaller.
+coax channels run 14 dB down. If the coax peak is overstated, the true gap
+is a few dB smaller.
 
 ### 3. The puck model is already inside the trusted band
 
@@ -201,7 +208,9 @@ trusted part is already 72% puck.
   ±60° near 900 Hz and ±45° at 1.35 kHz (read from the cached fields, both
   sides the same).
 - **The rear rejection plot shows the cardioid band.** Yes. The 150–300 Hz
-  and 300–500 Hz bands are shaded. The 3D curve sits at about 5–6 dB from
+  and 300–500 Hz bands are shaded. Read off `rear_rejection.png` (the
+  150–500 Hz values agree with the cached fields in the table under
+  observation 1): the 3D curve sits at about 5–6 dB from
   50 Hz to 450 Hz, then rises to about 18 dB at 850 Hz as the cone beams.
   The lumped curve is 20–25 dB below 300 Hz and falls to −1.4 dB at 900 Hz.
 - **The spinorama sound power sits below the listening window.** Yes, at
@@ -233,11 +242,13 @@ trusted part is already 72% puck.
    the guessed cone depth (65 mm) and the cavity shape.
 3. **At 220–450 Hz the deepest rear null is near ±120°, not 180°.** The H
    polar map shows a −10 dB island around ±120°. At 300 Hz the whole speaker
-   is −12.3 dB at 120° but only −4.9 dB at 180°. Straight behind, the sound
-   coming round both sides of the cabinet arrives in step and fills the
-   null. The gate is scored at 180°, which is the worst angle here. Your
-   wall is straight behind, so 180° is the right place to score; this just
-   explains why rear_hemisphere and cardioid_hard both land at 180°.
+   is −12.3 dB at 120° but only −4.9 dB at 180° (from the cached fields).
+   Straight behind, the sound coming round both sides of the cabinet
+   probably arrives in step and fills the null. The gate is scored at 180°,
+   which is the worst angle here. Assuming from your room description that
+   the wall is straight behind the speaker, 180° is the right place to
+   score. This just explains why rear_hemisphere and cardioid_hard both
+   land at 180°.
 4. **Below 100 Hz the speaker is about 2 dB louder below the axis than on
    it** (V polar, −30° to −120°). The bass drivers sit at 200 mm and 520 mm,
    well below the coax at 950 mm, so at 2 m the downward points are closer to
@@ -298,11 +309,17 @@ the scores use.
 | 3000 Hz | 7 | 19.1 mm / 6966 / 13928 / 499 s | 14.3 mm / 12075 / 24146 / 1494 s | 1994 s |
 | 4000 Hz | 5 | 14.3 mm / 10973 / 21942 / 893 s (full run only) | not run: needs about 24.0 GB, budget 22.0 GB | 893 s |
 
+The 4000 Hz row's elements and time are from `out/full_run.log`. Its
+frequency count, h and node count are from the cached field's `meta`, as
+shown in the Run table of `out/directivity/report.html`.
+
 Nothing in the report uses the 4000 Hz cabinet band. All its frequencies are
 above the trusted limit, where the coax comes from the puck and the bass and
 vents are not used. It costs about 15 minutes per full run.
 
-**Puck bands** (from `out/full_run.log`):
+**Puck bands.** Elements and solve times are from `out/full_run.log`.
+Frequency counts, h and node counts are from the cached fields' `meta`, as
+shown in the Run table of `out/directivity/report.html`.
 
 | Band ≤ | Freqs | h | Nodes | Elements | Solve |
 |---|---|---|---|---|---|
