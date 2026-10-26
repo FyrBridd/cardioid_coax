@@ -26,11 +26,16 @@ from speaker.drivers import Driver
 from speaker.layout import compute_layout
 from speaker.params import Params
 
-from .mesh import cabinet_mesh
+from .mesh import cabinet_mesh, puck_mesh
 from .solver import SurfaceMesh, solve_band
 
 BAND_EDGES = (250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 12000.0)  # Hz
 OBS_R = 2.0  # m, observation radius for scores
+AXIS_R = 1.0  # m, distance of the extra on-axis point evaluated by puck_field
+PUCK_F_RANGE = (500.0, 12000.0)  # Hz
+PUCK_H_MAX = 0.03  # m
+PUCK_H_COAX = 0.010  # m, coax-region size at and below PUCK_HI_BAND
+PUCK_HI_BAND = 4000.0  # Hz, bands above this use h_coax = h
 LISTENER_AZ = 23.0  # deg, horizontal angle of the listening seat
 LW_EXTRA_EL = 10.0  # deg, listening-window extras at (LISTENER_AZ, ±el)
 _REPO = Path(__file__).resolve().parents[3]
@@ -141,6 +146,41 @@ def cabinet_field(
         per_wavelength=per_wavelength, h_max=h_max, cache_dir=cache_dir,
     )
     return SourceField(np.asarray(f, dtype=float), names, obs, pr, meta)
+
+
+def puck_field(
+    p: Params,
+    coax: Driver,
+    f: np.ndarray,
+    *,
+    params_text: str,
+    per_wavelength: float = 6.0,
+    cache_dir: Path | None = Path("out/cache/bem"),
+) -> SourceField:
+    """Field of the coax alone on a puck, 500 Hz to 12 kHz, about the coax centre on the front face.
+
+    meta["axis_1m"] is the (nf, nsrc) pressure 1 m on axis, in the same convention as p.
+    """
+    f = np.asarray(f, dtype=float)
+    lo, hi = PUCK_F_RANGE
+    if f.size and (f.min() < lo or f.max() > hi):
+        raise ValueError(
+            f"puck_field covers {lo:g} Hz to {hi:g} Hz, got {f.min():g} Hz to {f.max():g} Hz"
+        )
+    obs = observation_set(OBS_R)
+    centre = np.array([p.cabinet.width / 2, 0.0, p.cabinet.coax_centre_z])  # puck_mesh's frame
+    points = np.concatenate([obs.r * obs.dirs, [[0.0, -AXIS_R, 0.0]]]).T + centre[:, None]
+
+    def build(edge: float, h: float) -> SurfaceMesh:
+        # Above 4 kHz the coax region needs no extra refinement; below it, 10 mm capped at h.
+        h_coax = h if edge > PUCK_HI_BAND else min(h, PUCK_H_COAX)
+        return puck_mesh(p, coax, h=h, h_coax=h_coax)
+
+    pr, names, meta = _banded_field(
+        "puck_field", build, f, points, (params_text, repr(coax)),
+        per_wavelength=per_wavelength, h_max=PUCK_H_MAX, cache_dir=cache_dir,
+    )
+    return SourceField(f, names, obs, pr[..., :-1], {**meta, "axis_1m": pr[..., -1]})
 
 
 def _banded_field(
