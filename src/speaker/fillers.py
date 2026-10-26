@@ -100,8 +100,9 @@ def compute_fillers(p: Params, coax: Driver, *, coax_centre: tuple[float, float]
     remaining = volume_to_fill - corner_volume
     if remaining < 0:
         raise ValueError(
-            f"corner fillers alone remove {corner_volume * 1000:.2f} L, more than the "
-            f"{volume_to_fill * 1000:.2f} L to fill; raise the target net volume"
+            f"corner fillers alone remove {corner_volume * 1000:.3f} L, more than the "
+            f"{volume_to_fill * 1000:.3f} L to fill (by {-remaining * 1000:.3f} L); "
+            f"lower the target net volume"
         )
     bx0, bx1 = x_lo + SIDE_CHANNEL, x_hi - SIDE_CHANNEL
     coax_rear = c.baffle_t + coax.depth - coax.flange_t

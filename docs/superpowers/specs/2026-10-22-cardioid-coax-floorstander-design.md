@@ -275,8 +275,9 @@ vented or larger box).
 behind the coax. That gives only about 5 dB rear rejection over 150–300 Hz.
 A lumped-model sweep compared the options. The owner chose to **keep the single
 box and fill it down to 10 L with printed fillers**, together with doubling the
-vent area. The modelled result is about 25 dB minimum over 150–300 Hz and about
-8 dB minimum to 500 Hz. Coax excursion stays at about 1.8 mm at 150 Hz and
+vent area. As built, the model gives 22.6 dB minimum over 150–300 Hz and
+8.9 dB minimum over 300–500 Hz. With the doubled vents but no fillers it gives
+13.5 dB and 4.3 dB, so the fillers mainly buy margin and the 300–500 Hz aim. Coax excursion stays at about 1.8 mm at 150 Hz and
 25 Vrms. Rejected alternatives:
 - a partition behind the coax, which clashes with the side vents;
 - a shallower stepped upper section (best in the model, but it changes the look).
@@ -315,12 +316,14 @@ possible. Smaller chamber volume comes third.
      so the pieces end at y = 205 mm.
    - The pieces don't extend into the vent band, so the air path from the
      back of the cone to every slot stays open.
-   - Together they give about 5 L.
+   - They stay 40 mm clear of the coax's horizontal and vertical centre
+     lines, so no part tapers into an unprintable sliver *(plan call)*.
+   - Together they give 3.85 L.
 2. **One rear block** *(decided)*:
    - Mounted on the inside of the back panel, behind the magnet. It comes out
      with the back panel.
    - It fills the rest of the volume needed to reach the 10 L net target
-     (about 4 L at the current numbers).
+     (4.98 L, 234 × 127 × 167 mm, at the current numbers).
    - It is **sized by the model, not fixed**: its size is solved so that the
      chamber's net volume, measured from the geometry, equals
      `coax_chamber_net_volume_l`.

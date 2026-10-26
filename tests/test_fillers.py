@@ -53,8 +53,14 @@ def test_unreachable_small_target_rejected():
         compute_layout(_cab(coax_chamber_net_volume=0.004), CX, B)
 
 def test_corners_alone_overshoot_rejected():
-    with pytest.raises(ValueError, match="corner fillers alone"):
+    with pytest.raises(ValueError, match="corner fillers alone.*lower the target net volume"):
         compute_layout(_cab(coax_chamber_net_volume=0.016), CX, B)
+
+def test_corner_overshoot_message_shows_the_overshoot():
+    # 14.98 L target: corners overshoot by only ~0.002 L; the numbers must not read equal.
+    with pytest.raises(ValueError, match=r"by 0\.00[0-9] L") as e:
+        compute_layout(_cab(coax_chamber_net_volume=0.01498), CX, B)
+    assert "raise" not in str(e.value)
 
 @pytest.mark.parametrize("ear", [0.85, 1.05])
 def test_fillers_follow_ear_height(ear):
