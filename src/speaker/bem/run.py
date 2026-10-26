@@ -35,7 +35,7 @@ from speaker.params import Params
 from .mesh import cabinet_mesh, puck_mesh
 from .solver import SurfaceMesh, solve_band
 
-BAND_EDGES = (250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 12000.0)  # Hz
+BAND_EDGES = (250.0, 500.0, 1000.0, 2000.0, 3000.0, 4000.0, 8000.0, 12000.0)  # Hz
 OBS_R = 2.0  # m, observation radius for scores
 AXIS_R = 1.0  # m, distance of the extra on-axis point evaluated by puck_field
 PUCK_F_RANGE = (500.0, 12000.0)  # Hz

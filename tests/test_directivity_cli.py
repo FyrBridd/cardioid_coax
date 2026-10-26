@@ -66,9 +66,9 @@ def test_mesh_check_limit_is_the_last_band_within_half_a_db(tmp_path, monkeypatc
     dev = out["band_max_dev_db"]
     assert dev["1000"] < 0.01 and dev["1260"] > 0.5
     # Every band is solved at both densities, one call per band and density.
-    assert set(out["elements"]) == {"250", "500", "1000", "2000", "4000"}
+    assert set(out["elements"]) == {"250", "500", "1000", "2000", "3000", "4000"}
     assert out["elements"]["2000"]["fine"]["nodes"] == 100 and "solve_s" in out["elements"]["2000"]["coarse"]
-    assert sorted(c[0] for c in calls) == [6.0] * 5 + [8.0] * 5
+    assert sorted(c[0] for c in calls) == [6.0] * 6 + [8.0] * 6
 
 
 def test_mesh_check_refines_every_mesh_size(tmp_path, monkeypatch):
@@ -91,7 +91,7 @@ def test_fine_meshes_have_more_nodes_in_every_band():
     """gmsh only (no BEM): the finer mesh of every mesh-check band up to 4 kHz has more nodes."""
     import speaker.directivity_report as dr
     d = dr._design(None)
-    for edge in (250.0, 500.0, 1000.0, 2000.0, 4000.0):
+    for edge in (250.0, 500.0, 1000.0, 2000.0, 3000.0, 4000.0):
         n = [dr._fine_dofs(d.p, d.coax, d.bass, *dr._mesh_sizes(edge, pw)) for pw in (dr.COARSE, dr.FINE)]
         assert n[1] > 1.3 * n[0], (edge, n)
 
@@ -127,6 +127,29 @@ def test_mesh_check_stops_before_a_fine_mesh_over_the_memory_budget(tmp_path, mo
     assert all(a[1:] == pytest.approx((0.0075, 0.015)) for a in asked)   # the guard sizes the real fine mesh
 
 
+def test_memory_cap_at_the_4k_fine_band_keeps_the_3k_band(tmp_path, monkeypatch):
+    """The real case: only the <= 4 kHz fine mesh is over budget. The check verifies through the <= 3 kHz
+    band, its limit is the top solved grid point there, and a full run accepts that limit."""
+    import numpy as np
+    import speaker.directivity_report as dr
+    calls = []
+    _stub_fields(monkeypatch, [])
+    monkeypatch.setattr(dr, "cabinet_field", _fake_cabinet_field(calls, hot=None))
+    monkeypatch.setattr(dr, "_fine_dofs", lambda p, coax, bass, h, h_coax, h_vent: 19370 if h < 0.012 else 7000)
+    mc = json.loads(dr.mesh_check(None, tmp_path, f_max=4000.0).read_text())
+    g = dr._grid(dr.FULL_GRID)
+    top3k = float(g[g <= 3000.0][-1])   # 2850.9 Hz
+    assert mc["capped_by_memory"] is True and "3000" in mc["elements"] and "4000" not in mc["elements"]
+    assert max(c[2] for c in calls) == pytest.approx(top3k)
+    assert mc["trusted_limit_hz"] == pytest.approx(top3k)
+    _stub_fields(monkeypatch, [])   # the full run's fields (the mesh check's fake is replaced)
+    page = dr.run_directivity(None, tmp_path).read_text()
+    assert f"{top3k:.0f} Hz" in page and "unverified" not in page
+    assert f"{top3k / 2:.0f} Hz to {top3k:.0f} Hz" in page   # the puck blend sits below the verified limit
+    trusted = [s for s in json.loads((tmp_path / "scores.json").read_text()) if s["confidence"] == "trusted"]
+    assert all(s["band"][1] <= top3k + 1e-6 for s in trusted)
+
+
 def test_output_grids_hold_the_score_band_edges():
     import numpy as np
     import speaker.directivity_report as dr
@@ -147,7 +170,7 @@ def test_mesh_check_grid_is_the_full_run_cabinet_grid(tmp_path, monkeypatch):
     monkeypatch.setattr(dr, "_fine_dofs", _small_dofs)
     dr.mesh_check(None, tmp_path, f_max=4000.0)
     g = dr._grid(dr.FULL_GRID)
-    want = [tuple(g[(g <= 4000.0) & (np.searchsorted(dr.BAND_EDGES, g) == b)]) for b in range(5)]
+    want = [tuple(g[(g <= 4000.0) & (np.searchsorted(dr.BAND_EDGES, g) == b)]) for b in range(6)]
     assert [c[6] for c in calls if c[0] == 6.0] == want
 
 
