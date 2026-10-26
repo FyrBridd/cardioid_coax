@@ -68,3 +68,16 @@ def test_rear_hemisphere_reports_worst_rear_angle():
     r = s["rear_hemisphere/trusted"]
     assert r.status == "info" and 0 < r.value < s["cardioid_hard/trusted"].value
     assert s["whole_rear/trusted"].value == pytest.approx(0, abs=1e-6)
+
+
+def test_window_spread_includes_the_0_degree_curve():
+    pat = lambda d, f: np.where(np.abs(_az(d)) < 0.5, 10 ** (3 / 20), 1.0)  # only 0 deg is 3 dB hot
+    s = _run(pat, limit=20000.0)["window_spread/trusted"]
+    assert s.value == pytest.approx(3.0, abs=0.05) and s.status == "warn"
+
+
+def test_presence_lift_trusted_ignores_data_above_the_limit():
+    dip = lambda d, f: np.where((f > 3300) & (np.abs(_az(d) - 23) < 0.5), 10 ** (-3 / 20), 1.0)
+    flat = _run(lambda d, f: np.ones(len(d)), limit=3000.0)["presence_lift/trusted"]
+    dipped = _run(dip, limit=3000.0)["presence_lift/trusted"]
+    assert dipped.value == pytest.approx(flat.value, abs=1e-6) and dipped.status == flat.status == "pass"

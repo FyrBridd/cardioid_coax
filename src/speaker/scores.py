@@ -90,18 +90,18 @@ def _flat23(c: _Ctx, m):
 
 def _window_spread(c: _Ctx, m):
     ref = c.sm(c.obs.at23_idx)
-    dev = np.stack([c.sm(c.h[a]) - ref for a in LW_RING if a])
+    dev = np.stack([c.sm(c.h[a]) - ref for a in LW_RING])
     worst = float(np.abs(dev[:, m]).max())
     ok = np.abs(dev).max(axis=0) <= 1.0
     return worst, "pass" if worst <= 1.0 else "warn", {"bands_within_1db": _runs(c.f, ok, m)}
 
 
 def _presence_lift(c: _Ctx, m):
-    # references use the whole 2-5 kHz / 1-2 kHz grid ranges, not just this confidence part
+    # the c23 reference is the 2-5 kHz mean restricted to this part; the 1-2 kHz mean spans the whole grid
     pm = m & (c.f >= 2000) & (c.f <= 5000)
     if not pm.any():
         return None
-    ref23 = c.sm(c.obs.at23_idx)[(c.f >= 2000) & (c.f <= 5000)].mean()
+    ref23 = c.sm(c.obs.at23_idx)[pm].mean()
     lo = (c.f >= 1000) & (c.f <= 2000)
     worst = -np.inf
     for cur in c.lw_curves():
@@ -158,8 +158,7 @@ _SPECS = [
      "where every angle is within +/-1 dB."),
     ("presence_lift", "Presence lift 2-5 kHz", (2000.0, 5000.0), _presence_lift,
      "Over the LW curves (H 0-30 step 5 plus the two az 23 el +/-10 directions), each 1/6-octave smoothed: value = max "
-     "over f in 2-5 kHz of max(c(f) - mean over 2-5 kHz of c23, c(f) - mean over 1-2 kHz of c); the means are over the "
-     "grid points of the whole range, not only this confidence part. Warn if > 0.5 dB, else pass."),
+     "over f in 2-5 kHz of max(c(f) - mean of c23 over the grid points in 2-5 kHz within this confidence part, c(f) - mean over 1-2 kHz of c). Warn if > 0.5 dB, else pass."),
     ("di_smooth_bass", "DI smoothness at bass-coax crossover", None, None,
      "For SPDI and ERDI over [fc/2, 2fc] with fc the bass-coax crossover: the max |residual| from a least-squares "
      "line in log f. Value = the worse of the two. Info."),
