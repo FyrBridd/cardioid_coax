@@ -18,15 +18,17 @@ def test_observation_set():
     # Sphere weights integrate cos^2 (dipole power) to 1/3.
     d = o.dirs[o.sphere_idx]
     assert (o.sphere_w * d[:, 1] ** 2).sum() == pytest.approx(1 / 3, abs=0.01)
+    a, e = np.radians(23), np.radians(10)
+    assert np.allclose(o.dirs[o.at23_idx], [np.sin(a), -np.cos(a), 0])
+    assert o.at23_idx not in o.sphere_idx and o.at23_idx not in o.h_idx
+    assert np.allclose(o.dirs[list(o.lw_extra_idx)],
+                       [[np.sin(a) * np.cos(e), -np.cos(a) * np.cos(e), np.sin(e)],
+                        [np.sin(a) * np.cos(e), -np.cos(a) * np.cos(e), -np.sin(e)]])
 
 def test_observation_set_conventions():
     o = observation_set(2.0)
     assert np.allclose(np.linalg.norm(o.dirs, axis=1), 1)
     assert np.allclose(o.dirs[o.v_idx[o.v_angles == 90][0]], [0, 0, 1])   # positive φ is up
-    a, e = np.radians(23), np.radians(10)
-    assert np.allclose(o.dirs[list(o.lw_extra_idx)],
-                       [[np.sin(a) * np.cos(e), -np.cos(a) * np.cos(e), np.sin(e)],
-                        [np.sin(a) * np.cos(e), -np.cos(a) * np.cos(e), -np.sin(e)]])
     assert len(o.sphere_idx) == 36 * 17 + 2 and len(set(o.sphere_idx)) == len(o.sphere_idx)
 
 def test_freq_grid():

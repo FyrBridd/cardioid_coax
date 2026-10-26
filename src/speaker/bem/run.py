@@ -31,7 +31,8 @@ from .solver import SurfaceMesh, solve_band
 
 BAND_EDGES = (250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 12000.0)  # Hz
 OBS_R = 2.0  # m, observation radius for scores
-LW_EXTRA = (23.0, 10.0)  # deg, listening-window extras at (az, ±el)
+LISTENER_AZ = 23.0  # deg, horizontal angle of the listening seat
+LW_EXTRA_EL = 10.0  # deg, listening-window extras at (LISTENER_AZ, ±el)
 _REPO = Path(__file__).resolve().parents[3]
 
 
@@ -50,6 +51,7 @@ class Observation:
     v_angles: np.ndarray  # deg, -180..175 step 5: (0, -cos φ, sin φ), positive up
     v_idx: np.ndarray
     lw_extra_idx: tuple[int, int]  # (az 23°, el +10°), (az 23°, el -10°)
+    at23_idx: int  # horizontal +23° (the listener), not on the 5° ring nor in the sphere grid
     sphere_idx: np.ndarray
     sphere_w: np.ndarray  # solid-angle weights over sphere_idx, summing to 1
 
@@ -60,7 +62,10 @@ def _sphere_dir(az: float, el: float) -> np.ndarray:
 
 
 def observation_set(r: float = OBS_R) -> Observation:
-    """Rings, listening-window extras and a 10° sphere grid, sharing coincident directions."""
+    """Rings, the listener direction, listening-window extras and a 10° sphere grid.
+
+    Coincident directions are stored once and shared by index.
+    """
     dirs: list[np.ndarray] = []
     index: dict[tuple[int, ...], int] = {}
 
@@ -74,8 +79,8 @@ def observation_set(r: float = OBS_R) -> Observation:
     ring = np.arange(-180, 180, 5)
     h_idx = np.array([add(_sphere_dir(a, 0.0)) for a in ring])
     v_idx = np.array([add(np.array([0.0, -np.cos(t), np.sin(t)])) for t in np.radians(ring)])
-    az, el = LW_EXTRA
-    lw = (add(_sphere_dir(az, el)), add(_sphere_dir(az, -el)))
+    lw = (add(_sphere_dir(LISTENER_AZ, LW_EXTRA_EL)), add(_sphere_dir(LISTENER_AZ, -LW_EXTRA_EL)))
+    at23 = add(_sphere_dir(LISTENER_AZ, 0.0))
 
     # Rings of 36 points at el -80..80 each own the band el ± 5°, an area ∝ cos(el);
     # the poles own the caps above ±85°. The areas sum to 4π exactly.
@@ -94,7 +99,7 @@ def observation_set(r: float = OBS_R) -> Observation:
     return Observation(
         dirs=np.array(dirs), r=float(r),
         h_angles=ring.astype(float), h_idx=h_idx, v_angles=ring.astype(float), v_idx=v_idx,
-        lw_extra_idx=lw, sphere_idx=np.array(sphere), sphere_w=w / w.sum(),
+        lw_extra_idx=lw, at23_idx=at23, sphere_idx=np.array(sphere), sphere_w=w / w.sum(),
     )
 
 
