@@ -27,6 +27,10 @@ def test_exports(tmp_path):
     assert (tmp_path / "stl/flare_insert_PROVISIONAL.stl").stat().st_size > 0
     assert (tmp_path / "step/flare_insert_PROVISIONAL.step").exists()
     assert (tmp_path / "step/baffle_inner.step").exists()
+    for name in ("filler_corner_top_left", "filler_corner_top_right", "filler_corner_bottom_left",
+                 "filler_corner_bottom_right", "filler_rear_block"):
+        assert (tmp_path / f"step/{name}_PROVISIONAL.step").exists()
+        assert (tmp_path / f"stl/{name}_PROVISIONAL.stl").stat().st_size > 0
 
 
 def test_dxf_layers(tmp_path):
@@ -54,6 +58,7 @@ def test_measured_drops_provisional(tmp_path):
     files = export_all(L, dataclasses.replace(P, drivers_measured=True), CX, B, tmp_path)
     assert not any("PROVISIONAL" in f.name for fs in files.values() for f in fs)
     assert (tmp_path / "step/flare_insert.step").exists() and (tmp_path / "stl/flare_insert.stl").exists()
+    assert (tmp_path / "stl/filler_rear_block.stl").exists()
     doc = ezdxf.readfile(files["dxf"][0])
     assert not any("PROVISIONAL" in e.text for e in doc.modelspace() if e.dxftype() == "MTEXT")
 

@@ -37,9 +37,9 @@ def test_flare_insert_dims():
     assert bb.zlen == pytest.approx(18.0, abs=0.2)
 
 def _assert_no_intersections(l, p):
-    # Every placed part of the assembly (8 panels + flare insert), pairwise.
+    # Every placed part of the assembly (8 panels + flare insert + 5 fillers), pairwise.
     solids = {ch.name: ch.obj.val().moved(ch.loc) for ch in assembly(l, p, CX, B).children}
-    assert len(solids) == 9
+    assert len(solids) == 14
     for (na, a), (nb, b) in itertools.combinations(solids.items(), 2):
         vol = a.intersect(b).Volume()
         assert vol < 1.0, f"{na} and {nb} intersect by {vol:.1f} mm^3"

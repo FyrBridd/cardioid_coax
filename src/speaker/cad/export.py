@@ -11,6 +11,7 @@ import ezdxf.units
 from ..drivers import Driver
 from ..layout import Layout
 from ..params import Params
+from .fillers import filler_solids
 from .panels import Feature, Panel, assembly, build_panels, flare_insert, panel_solid
 
 PROVISIONAL_TEXT = "PROVISIONAL - drivers not yet measured"
@@ -106,4 +107,13 @@ def export_all(
     fl = out_dir / "stl" / f"flare_insert{suffix}.stl"
     cq.exporters.export(flare, str(fl))
     stl.append(fl)
+
+    # Filler profiles follow the coax frame and magnet sizes: provisional too.
+    for name, solid in filler_solids(l).items():
+        fs = out_dir / "step" / f"{name}{suffix}.step"
+        cq.exporters.export(solid, str(fs))
+        step.append(fs)
+        fl = out_dir / "stl" / f"{name}{suffix}.stl"
+        cq.exporters.export(solid, str(fl))
+        stl.append(fl)
     return {"step": step, "stl": stl, "dxf": dxf}
