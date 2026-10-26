@@ -7,13 +7,19 @@ rings, listening-window extras and a sphere grid for power averages).
 
 Results are stored in the engineering e^{+jωt} convention: the complex conjugate of
 solve_band's e^{-iωt} output.
+
+The cache key covers the inputs, the mesh settings and code_version(): the source text of the
+speaker modules this file imports (directly or not) and the bempp-cl and gmsh versions.
 """
 from __future__ import annotations
 
+import ast
 import hashlib
+import importlib.metadata
+import importlib.util
 import json
 import os
-import subprocess
+import sys
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -38,7 +44,10 @@ PUCK_H_COAX = 0.010  # m, coax-region size at and below PUCK_HI_BAND
 PUCK_HI_BAND = 4000.0  # Hz, bands above this use h_coax = h
 LISTENER_AZ = 23.0  # deg, horizontal angle of the listening seat
 LW_EXTRA_EL = 10.0  # deg, listening-window extras at (LISTENER_AZ, ±el)
-_REPO = Path(__file__).resolve().parents[3]
+FAR_R = 50.0  # m, distance of cabinet_field's far-field points on H 0° and H 180°
+CAB_H_COAX = 0.010  # m, default cabinet mesh size near the coax cavity
+CAB_H_VENT = 0.020  # m, default cabinet mesh size on the vents
+_BEM_DISTS = ("bempp-cl", "gmsh")  # installed packages whose versions enter the cache key
 
 
 def freq_grid(f_lo: float = 50.0, f_hi: float = 20000.0, ppo: int = 12) -> np.ndarray:
@@ -133,19 +142,26 @@ def cabinet_field(
     params_text: str,
     per_wavelength: float = 6.0,
     h_max: float = 0.05,
+    h_coax: float = CAB_H_COAX,
+    h_vent: float = CAB_H_VENT,
     cache_dir: Path | None = Path("out/cache/bem"),
 ) -> SourceField:
-    """Field of every cabinet source at OBS_R about the coax centre on the front face."""
+    """Field of every cabinet source at OBS_R about the coax centre on the front face.
+
+    meta["far_h0_h180"] is the (nf, nsrc, 2) pressure FAR_R from the same point on H 0° and
+    H 180°, in the same convention as p.
+    """
     obs = observation_set(OBS_R)
     cx, cz = compute_layout(p, coax, bass).coax_centre
-    points = (np.array([cx, 0.0, cz]) + obs.r * obs.dirs).T
+    far = FAR_R * np.array([[0.0, -1.0, 0.0], [0.0, 1.0, 0.0]])  # H 0° and H 180°
+    points = (np.array([cx, 0.0, cz]) + np.concatenate([obs.r * obs.dirs, far])).T
     pr, names, meta = _banded_field(
         "cabinet_field",
-        lambda edge, h: cabinet_mesh(p, coax, bass, h=h),
-        f, points, (params_text, repr(coax), repr(bass)),
+        lambda edge, h: cabinet_mesh(p, coax, bass, h=h, h_coax=h_coax, h_vent=h_vent),
+        f, points, (params_text, repr(p), repr(coax), repr(bass), repr(float(h_coax)), repr(float(h_vent))),
         per_wavelength=per_wavelength, h_max=h_max, cache_dir=cache_dir,
     )
-    return SourceField(np.asarray(f, dtype=float), names, obs, pr, meta)
+    return SourceField(np.asarray(f, dtype=float), names, obs, pr[..., :-2], {**meta, "far_h0_h180": pr[..., -2:]})
 
 
 def puck_field(
@@ -177,7 +193,7 @@ def puck_field(
         return puck_mesh(p, coax, h=h, h_coax=h_coax)
 
     pr, names, meta = _banded_field(
-        "puck_field", build, f, points, (params_text, repr(coax)),
+        "puck_field", build, f, points, (params_text, repr(p), repr(coax)),
         per_wavelength=per_wavelength, h_max=PUCK_H_MAX, cache_dir=cache_dir,
     )
     return SourceField(f, names, obs, pr[..., :-1], {**meta, "axis_1m": pr[..., -1]})
@@ -251,7 +267,7 @@ def _cache_key(
 ) -> str:
     """sha256 over everything the result depends on, including the code version."""
     h = hashlib.sha256()
-    for part in (kind, *key_parts, repr(float(per_wavelength)), repr(float(h_max)), _code_version()):
+    for part in (kind, *key_parts, repr(float(per_wavelength)), repr(float(h_max)), code_version()):
         h.update(part.encode())
         h.update(b"\0")
     h.update(f.astype(np.float64).tobytes())
@@ -259,17 +275,36 @@ def _cache_key(
     return h.hexdigest()
 
 
-def _git(*args: str) -> str:
-    return subprocess.run(["git", *args], cwd=_REPO, check=True, capture_output=True, text=True).stdout
+def _imports(name: str) -> set[str]:
+    """speaker.* modules named by the import statements of module `name` (anywhere in its source)."""
+    mod = sys.modules[name]
+    pkg = name if hasattr(mod, "__path__") else name.rpartition(".")[0]
+    found = set()
+    for node in ast.walk(ast.parse(Path(mod.__file__).read_text())):
+        if isinstance(node, ast.Import):
+            found.update(a.name for a in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            base = importlib.util.resolve_name("." * node.level + (node.module or ""), pkg) if node.level else node.module
+            found.add(base)
+            found.update(f"{base}.{a.name}" for a in node.names)  # `from pkg import module`
+    return {m for m in found if m.split(".")[0] == "speaker" and m in sys.modules}
 
 
-def _code_version() -> str:
-    """git HEAD, plus a hash of the uncommitted changes under src/ (tracked diff and untracked files)."""
-    head = _git("rev-parse", "HEAD").strip()
-    if not _git("status", "--porcelain", "--", "src/").strip():
-        return head
-    h = hashlib.sha256(_git("diff", "HEAD", "--", "src/").encode())
-    for name in sorted(_git("ls-files", "--others", "--exclude-standard", "-z", "--", "src/").split("\0")):
-        if name:
-            h.update(name.encode() + b"\0" + (_REPO / name).read_bytes())
-    return f"{head}+{h.hexdigest()}"
+def code_version() -> str:
+    """sha256 over the source text of speaker.bem.run's import closure within speaker (with the
+    packages that contain it), sorted by module name, and the installed bempp-cl and gmsh versions."""
+    todo, seen = [__name__], set()
+    while todo:
+        name = todo.pop()
+        if name not in seen:
+            seen.add(name)
+            todo.extend(_imports(name))
+    for name in list(seen):
+        parts = name.split(".")
+        seen.update(".".join(parts[:i]) for i in range(1, len(parts)))
+    h = hashlib.sha256()
+    for name in sorted(seen):
+        h.update(name.encode() + b"\0" + Path(sys.modules[name].__file__).read_bytes() + b"\0")
+    for dist in _BEM_DISTS:
+        h.update(f"{dist}=={importlib.metadata.version(dist)}\0".encode())
+    return h.hexdigest()

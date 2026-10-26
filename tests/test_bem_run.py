@@ -60,6 +60,7 @@ def test_banding_and_stored_phase_convention(monkeypatch):
         cabinet_field(P, CX, B, np.array([12001.0]), params_text="x", cache_dir=None)
 
 def test_cache_key_covers_inputs_and_code_version(tmp_path, monkeypatch):
+    import dataclasses
     P, CX, B = load_params(), load_driver("bms_10c262"), load_driver("dayton_rss265ho_44")
     calls = []
     monkeypatch.setattr(run, "solve_band", _fake_solver(calls))
@@ -71,9 +72,81 @@ def test_cache_key_covers_inputs_and_code_version(tmp_path, monkeypatch):
     cabinet_field(P, CX, B, np.array([60.0]), **{**kw, "h_max": 0.09})
     cabinet_field(P, CX, B, np.array([60.0]), per_wavelength=5.0, **kw)
     cabinet_field(P, CX, load_driver("bms_10c262"), np.array([60.0]), **kw)   # bass driver changed
-    monkeypatch.setattr(run, "_code_version", lambda: "other")
+    cabinet_field(P, CX, B, np.array([60.0]), h_coax=0.008, **kw)
+    cabinet_field(P, CX, B, np.array([60.0]), h_vent=0.015, **kw)
+    # Params enter the key themselves, not only through params_text.
+    P2 = dataclasses.replace(P, cabinet=dataclasses.replace(P.cabinet, coax_centre_z=P.cabinet.coax_centre_z + 0.01))
+    cabinet_field(P2, CX, B, np.array([60.0]), **kw)
+    monkeypatch.setattr(run, "code_version", lambda: "other")
     cabinet_field(P, CX, B, np.array([60.0]), **kw)
-    assert len(calls) == 6
+    assert len(calls) == 9
+
+
+def test_code_version_includes_the_bem_package_versions(monkeypatch):
+    import importlib.metadata
+    base = run.code_version()
+    real = importlib.metadata.version
+    for dist in ("bempp-cl", "gmsh"):
+        monkeypatch.setattr(importlib.metadata, "version", lambda d, dist=dist: "0.0" if d == dist else real(d))
+        assert run.code_version() != base, dist
+        monkeypatch.setattr(importlib.metadata, "version", real)
+    assert run.code_version() == base
+
+
+def _code_version_of_copy(src):
+    import os, subprocess, sys
+    env = {**os.environ, "PYTHONPATH": str(src)}
+    out = subprocess.run([sys.executable, "-c", "import speaker.bem.run as r; print(r.__file__); print(r.code_version())"],
+                         env=env, capture_output=True, text=True, check=True).stdout.split()
+    assert out[0].startswith(str(src))  # the copy, not the installed package
+    return out[1]
+
+
+def test_code_version_follows_the_field_modules_only(tmp_path):
+    """A changed module that the field depends on changes the key; a changed unrelated module does not."""
+    import shutil
+    from pathlib import Path
+    src = tmp_path / "src"
+    shutil.copytree(Path(run.__file__).parents[1], src / "speaker", ignore=shutil.ignore_patterns("__pycache__"))
+    base = _code_version_of_copy(src)
+    assert base == run.code_version()
+    for rel, changes in (("scores.py", False), ("report.py", False), ("bem/mesh.py", True),
+                         ("layout.py", True), ("constants.py", True), ("bem/__init__.py", True)):
+        f = src / "speaker" / rel
+        text = f.read_text()
+        f.write_text(text + "\n# edited\n")
+        assert (_code_version_of_copy(src) != base) == changes, rel
+        f.write_text(text)
+
+
+def test_cabinet_field_far_points_on_h0_and_h180(monkeypatch):
+    P, CX, B = load_params(), load_driver("bms_10c262"), load_driver("dayton_rss265ho_44")
+    seen = []
+
+    def fake(mesh, freqs, points, **kw):   # e^{-iωt} value i * (y of the point)
+        seen.append(points)
+        return np.broadcast_to(1j * points[1], (len(freqs), len(mesh.tag_names), points.shape[1])).copy()
+    monkeypatch.setattr(run, "solve_band", fake)
+    f = np.array([150.0, 300.0])
+    fld = cabinet_field(P, CX, B, f, params_text="x", h_max=0.2, cache_dir=None)
+    o, (cx, cz) = fld.obs, compute_layout(P, CX, B).coax_centre
+    assert fld.p.shape == (2, 6, len(o.dirs))
+    far = fld.meta["far_h0_h180"]
+    assert far.shape == (2, 6, 2)
+    pts = seen[0][:, -2:].T
+    assert np.allclose(pts, [[cx, -run.FAR_R, cz], [cx, run.FAR_R, cz]])
+    assert np.allclose(far[..., 0], 1j * run.FAR_R) and np.allclose(far[..., 1], -1j * run.FAR_R)  # conjugated
+    assert np.allclose(fld.p, np.conj(1j * seen[0][1, :-2]))
+
+
+def test_cabinet_field_mesh_sizes_reach_the_mesher(monkeypatch):
+    P, CX, B = load_params(), load_driver("bms_10c262"), load_driver("dayton_rss265ho_44")
+    calls = []
+    monkeypatch.setattr(run, "solve_band", _fake_solver(calls))
+    for kw in ({}, {"h_coax": 0.006}, {"h_vent": 0.01}):
+        cabinet_field(P, CX, B, np.array([100.0]), params_text="x", h_max=0.05, cache_dir=None, **kw)
+    assert calls[1][0] > calls[0][0] and calls[2][0] > calls[0][0]   # finer regions, more triangles
+
 
 @pytest.mark.bem
 def test_cabinet_radiates_as_monopole_at_low_frequency(tmp_path):
