@@ -43,7 +43,7 @@ class Ways:
     f: np.ndarray
     obs: Observation
     ways: dict[str, np.ndarray]  # "bass", "coax_lf", "coax_hf": (nf, nd) complex peak Pa
-    meta: dict
+    meta: dict  # lf_join_mismatch_db, trusted_limit, hf_reference; u_lf: coax LF peak volume velocity up to the hold
 
 
 def coax_section(ways: Ways) -> np.ndarray:
@@ -56,18 +56,20 @@ def vent_scaled_section(
 ) -> np.ndarray:
     """The coax section with the vents re-strengthened for vent_resistance x scale, no new BEM run.
 
-    At and below LF_JOIN[0] the coax LF strengths are lumped: the cone keeps its nominal
-    strength (from cp) and the vents get the lumped u_vent/u_cone ratio at the scaled
-    resistance, on the same cabinet vent fields. Above LF_JOIN[0] the section is unchanged.
+    Each vent's strength is the lumped u_vent/u_cone ratio times the coax LF strength u_lf
+    (ways.meta["u_lf"]) at every frequency; u_lf stays as it is and only the ratio is taken at the
+    scaled resistance, on the same cabinet vent fields. The vents radiate only up to the trusted
+    limit (the cabinet field), so above it the section is unchanged.
     """
     f = ways.f
-    m = f <= LF_JOIN[0]
+    m = f <= ways.meta["trusted_limit"]
     out = coax_section(ways).copy()
     if scale == 1.0 or not m.any():
         return out
     nom = simulate(coax, cp, f[m], V_DRIVE)
     alt = simulate(coax, replace(cp, vent_resistance=cp.vent_resistance * scale), f[m], V_DRIVE)
-    d_vent = (alt.u_vent / alt.u_cone - nom.u_vent / nom.u_cone) * np.sqrt(2) * nom.u_cone / 2
+    u_lf = ways.meta["u_lf"][: int(m.sum())]  # on way_responses' internal grid, equal to f up to the hold
+    d_vent = (alt.u_vent / alt.u_cone - nom.u_vent / nom.u_cone) * u_lf / 2
     vents = _field(cab, "vent_left", f[m]) + _field(cab, "vent_right", f[m])
     out[m] += d_vent[:, None] * vents
     return out
@@ -238,6 +240,6 @@ def way_responses(
     return Ways(
         f=f, obs=cab.obs,
         ways={"bass": bass_way, "coax_lf": extend(lf_i, "lf"), "coax_hf": extend(hf_i, "hf")},
-        meta={"lf_join_mismatch_db": mismatch, "trusted_limit": tl,
+        meta={"lf_join_mismatch_db": mismatch, "trusted_limit": tl, "u_lf": u_lf,
               "hf_reference": "puck" if puck is not None else "piston"},
     )

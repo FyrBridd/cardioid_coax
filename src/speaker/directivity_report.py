@@ -138,8 +138,9 @@ def mesh_check(params_path: Path | None, out_dir: Path, *, f_max: float = 4000.0
 
     Per 1/3-octave band: the max |dB| difference over the grid points and over the at23, LW, ER,
     SP and H 0-30 curves after the crossover. The trusted limit is the upper edge of the highest
-    band that, with every band below it, differs by <= MAX_DEV_DB, capped at the last completed
-    BEM band. A fine mesh over BEM_MEMORY_BUDGET stops the check at that band.
+    band that, with every band below it, differs by <= MAX_DEV_DB, capped at the top solved
+    frequency. A fine mesh over BEM_MEMORY_BUDGET stops the check at that band. If no band
+    converges, the JSON is still written and ValueError is raised.
     """
     d = _design(params_path)
     f = freq_grid(FULL_GRID[0], f_max, FULL_GRID[2])
@@ -147,7 +148,7 @@ def mesh_check(params_path: Path | None, out_dir: Path, *, f_max: float = 4000.0
     if band.max() >= len(BAND_EDGES):
         raise ValueError(f"f_max {f_max:g} Hz is above the last band edge, {BAND_EDGES[-1]:g} Hz")
     kw = dict(params_text=d.text, h_max=CAB_H_MAX, cache_dir=CACHE_DIR)
-    coarse, refined, elements, capped, last_edge = [], [], {}, False, None
+    coarse, refined, elements, capped = [], [], {}, False
     for b in np.unique(band):
         edge, fb = BAND_EDGES[b], f[band == b]
         h_c, h_f = (min(CAB_H_MAX, C / (edge * pw)) for pw in (COARSE, fine))
@@ -164,7 +165,6 @@ def mesh_check(params_path: Path | None, out_dir: Path, *, f_max: float = 4000.0
         r = c if same else cabinet_field(d.p, d.coax, d.bass, fb, per_wavelength=fine, **kw)
         coarse.append(c)
         refined.append(r)
-        last_edge = edge
         elements[f"{edge:g}"] = {"same_mesh": same, "coarse": c.meta["bands"][0], "fine": r.meta["bands"][0]}
         print(f"mesh check: band <= {edge:g} Hz, {c.meta['bands'][0]['triangles']} / "
               f"{r.meta['bands'][0]['triangles']} elements, {time.perf_counter() - t0:.1f} s",
@@ -189,7 +189,7 @@ def mesh_check(params_path: Path | None, out_dir: Path, *, f_max: float = 4000.0
         if ok:
             limit = 1000.0 * 2.0 ** ((q + 0.5) / 3)
     out = {
-        "trusted_limit_hz": min(limit, last_edge),
+        "trusted_limit_hz": min(limit, float(fc.f[-1])),  # never past the top solved frequency
         "band_max_dev_db": band_dev,
         "per_wavelength": [COARSE, float(fine)],
         "elements": elements,
@@ -202,6 +202,10 @@ def mesh_check(params_path: Path | None, out_dir: Path, *, f_max: float = 4000.0
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / "mesh_check.json"
     path.write_text(json.dumps(_jsonable(out), indent=2, allow_nan=False))
+    if limit == 0.0:
+        first = next(iter(band_dev.items()))
+        raise ValueError(f"mesh check: no 1/3-octave band converged; the lowest ({first[0]} Hz) already differs "
+                         f"by {first[1]:.2f} dB (> {MAX_DEV_DB:g} dB) between the meshes. See {path}")
     return path
 
 
@@ -217,8 +221,27 @@ def _commit() -> str:
         return "unknown"
 
 
-def _hard(scores: list[Score]) -> float:
-    return next(s.value for s in scores if s.key == "cardioid_hard" and s.confidence == "trusted")
+def _trusted_value(scores: list[Score], key: str) -> float:
+    return next(s.value for s in scores if s.key == key and s.confidence == "trusted")
+
+
+def _trusted_limit(mc: dict | None, *, cab_top: float, f_top: float, puck: bool) -> tuple[float, str]:
+    """The trusted limit and its header text, from the mesh check or UNVERIFIED_LIMIT.
+
+    When the grid goes past the cabinet field (cab_top), a limit above it is capped there. A limit
+    below what the run needs (2 x the puck's lowest frequency for the cabinet-to-puck blend, or the
+    top of a puck-less grid) raises ValueError.
+    """
+    tl = float(mc["trusted_limit_hz"]) if mc else UNVERIFIED_LIMIT
+    note = "" if mc else " (unverified)"
+    if f_top > cab_top and tl > cab_top:
+        note += f" (from {tl:.0f} Hz, capped at the top of the cabinet field)"
+        tl = cab_top
+    need = 2 * PUCK_F_RANGE[0] if puck else f_top
+    if tl < need:
+        why = "the cabinet-to-puck blend starts at half of it" if puck else "a run without the puck stops at it"
+        raise ValueError(f"trusted 3D limit {tl:.0f} Hz is below {need:.0f} Hz, which this run needs ({why})")
+    return tl, f"{tl:.0f} Hz{note}"
 
 
 def run_directivity(params_path: Path | None, out_dir: Path, *, fast: bool = False,
@@ -228,18 +251,16 @@ def run_directivity(params_path: Path | None, out_dir: Path, *, fast: bool = Fal
     out_dir = Path(out_dir)
     mc_path = out_dir / "mesh_check.json"
     mc = json.loads(mc_path.read_text()) if mc_path.exists() else None
-    tl = float(mc["trusted_limit_hz"]) if mc else UNVERIFIED_LIMIT
-    tl_text = f"{tl:.0f} Hz" + ("" if mc else " (unverified)")
+    f = freq_grid(*(FAST_GRID if fast else FULL_GRID))
+    f_cab = f if fast else f[f <= f_max_3d]
+    tl, tl_text = _trusted_limit(mc, cab_top=float(f_cab[-1]), f_top=float(f[-1]), puck=not fast)
     kw = dict(params_text=d.text, per_wavelength=per_wavelength, cache_dir=CACHE_DIR)
     t0 = time.perf_counter()
     if fast:
-        f = freq_grid(*FAST_GRID)
-        cab = _banded(lambda x: cabinet_field(d.p, d.coax, d.bass, x, h_max=FAST_H_MAX, **kw), f, "cabinet")
+        cab = _banded(lambda x: cabinet_field(d.p, d.coax, d.bass, x, h_max=FAST_H_MAX, **kw), f_cab, "cabinet")
         puck = None
     else:
-        f = freq_grid(*FULL_GRID)
-        cab = _banded(lambda x: cabinet_field(d.p, d.coax, d.bass, x, h_max=CAB_H_MAX, **kw),
-                      f[f <= f_max_3d], "cabinet")
+        cab = _banded(lambda x: cabinet_field(d.p, d.coax, d.bass, x, h_max=CAB_H_MAX, **kw), f_cab, "cabinet")
         fp = f[(f >= PUCK_F_RANGE[0]) & (f <= PUCK_F_RANGE[1])]
         puck = _banded(lambda x: puck_field(d.p, d.coax, x, **kw), fp, "puck")
     xo = FixedCrossover()
@@ -250,8 +271,9 @@ def run_directivity(params_path: Path | None, out_dir: Path, *, fast: bool = Fal
     # Cardioid: the vent resistance spread (same fields), and the lumped model for comparison.
     cp = cardioid_params(d.p, d.layout, d.coax)
     spread = {s: vent_scaled_section(ways, cab, d.coax, cp, s) for s in VENT_SPREAD}
-    hard = {1.0: _hard(scores)}
-    hard.update({s: _hard(score_all(f, total, x, obs, spin, trusted_limit=tl, xo=xo)) for s, x in spread.items()})
+    spread_scores = {1.0: scores}
+    spread_scores.update({s: score_all(f, total, x, obs, spin, trusted_limit=tl, xo=xo) for s, x in spread.items()})
+    vent = {k: {s: _trusted_value(sc, k) for s, sc in spread_scores.items()} for k in ("cardioid_hard", "cardioid_aim")}
     i0, i180 = _h(obs, 0), _h(obs, -180)
     rej = lambda x: _spl(x[:, i0]) - _spl(x[:, i180])  # noqa: E731
     fr = f[f <= min(f[-1], 1000.0)]
@@ -281,7 +303,7 @@ def run_directivity(params_path: Path | None, out_dir: Path, *, fast: bool = Fal
     (out_dir / "scores.json").write_text(
         json.dumps(_jsonable([dataclasses.asdict(s) for s in scores]), indent=2, allow_nan=False))
     page = _html(d, fast=fast, mc=mc, tl_text=tl_text, scores=scores, gains=gains, xo=xo, ways=ways,
-                 hard=hard, cp=cp, max_diff=max_diff, fields={"cabinet": cab, "puck": puck},
+                 vent=vent, cp=cp, max_diff=max_diff, fields={"cabinet": cab, "puck": puck},
                  wall=time.perf_counter() - t0)
     path = out_dir / "report.html"
     path.write_text(page)
@@ -311,7 +333,7 @@ def _row(cells: list[str], cls: str = "") -> str:
     return f"<tr{f' class={cls!r}' if cls else ''}>" + "".join(cells) + "</tr>"
 
 
-def _html(d: _Design, *, fast, mc, tl_text, scores, gains, xo, ways, hard, cp, max_diff, fields, wall) -> str:
+def _html(d: _Design, *, fast, mc, tl_text, scores, gains, xo, ways, vent, cp, max_diff, fields, wall) -> str:
     e = html.escape
     sha = hashlib.sha256(d.path.read_bytes()).hexdigest()
     head = [("Params", f"{e(str(d.path))}<br><code>sha256 {sha}</code>"),
@@ -343,10 +365,12 @@ def _html(d: _Design, *, fast, mc, tl_text, scores, gains, xo, ways, hard, cp, m
     notes = [
         f"<b>Trusted 3D limit</b> {how}. Scores are split at the limit; rows above it are grey "
         "(low confidence) and do not rank designs.",
-        f"<b>Vent resistance</b> (the felt as built is unknown, ±30%): cardioid_hard (trusted) is "
-        + ", ".join(f"{hard[s]:.1f} dB at R × {s:g}" for s in (VENT_SPREAD[0], 1.0, VENT_SPREAD[1]))
-        + f" (R = {r:.0f} Pa s/m). Only the lumped vent-to-cone ratio below 300 Hz is rescaled; "
-        "the 3D vent fields do not depend on the resistance.",
+        f"<b>Vent resistance</b> (the felt as built is unknown, ±30%; R = {r:.0f} Pa s/m): "
+        + "; ".join(f"{k} (trusted) is " + ", ".join(f"{v[s]:.1f} dB at R × {s:g}" for s in (VENT_SPREAD[0], 1.0, VENT_SPREAD[1]))
+                    for k, v in vent.items())
+        + ". Only the lumped vent-to-cone volume-velocity ratio is taken at the scaled resistance, at every "
+        "frequency the vents radiate (up to the trusted limit); the coax LF strength and the 3D vent fields "
+        "are those of the nominal run, since the fields do not depend on the resistance.",
         f"<b>Cardioid models</b>: the 3D coax-section rear rejection and the lumped model differ by up to "
         f"{max_diff:.1f} dB over 150-500 Hz; both are plotted. The 3D model is the authority for the cardioid "
         "gate (spec §4); the lumped model ignores cabinet diffraction.",
@@ -383,8 +407,7 @@ def _html(d: _Design, *, fast, mc, tl_text, scores, gains, xo, ways, hard, cp, m
         fig("window_family", "H 0-30° in 5° steps minus the 23° listener curve, 1/6-octave smoothed; "
                              "±1 dB band and 2-5 kHz shaded."),
         fig("rear_rejection", "Coax section alone (cone plus vents, no bass, before the crossover filter): "
-                              "front minus back. Shaded: 3D result at vent resistance ×0.7 to ×1.3; the "
-                              "resistance only sets the lumped vent strength below 300 Hz, so the band closes there."),
+                              "front minus back. Shaded: 3D result with the vent strength taken at vent resistance ×0.7 to ×1.3."),
         fig("whole_rear", "Info only: the whole speaker after the crossover, front minus back."),
         "<h2>Scores</h2>",
         "<table><tr><th>Score</th><th>Value</th><th>Unit</th><th>Status</th><th>Band</th><th>Confidence</th>"

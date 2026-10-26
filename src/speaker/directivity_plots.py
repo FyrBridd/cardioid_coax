@@ -90,7 +90,7 @@ def rear_rejection(path: Path, f: np.ndarray, bem: np.ndarray, lumped: np.ndarra
                    r_text: str, title: str) -> None:
     """Coax-section L(0) - L(180): BEM, the BEM at vent resistance x0.7 and x1.3 (shaded), lumped."""
     fig, ax = plt.subplots(figsize=(11, 5))
-    ax.fill_between(f, *band, color="C0", alpha=0.2, label=f"3D (BEM), vent resistance {r_text}\n(below 300 Hz)")
+    ax.fill_between(f, *band, color="C0", alpha=0.2, label=f"3D (BEM), vent resistance {r_text}")
     ax.plot(f, bem, color="C0", lw=2, label="3D (BEM), nominal vent resistance")
     ax.plot(f, lumped, color="C3", ls="--", label="lumped model (free field, no cabinet)")
     ax.axhline(FB_TARGET_DB, color="grey", ls=":", label=f"{FB_TARGET_DB:g} dB hard")
