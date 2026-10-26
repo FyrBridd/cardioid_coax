@@ -14,7 +14,7 @@ from speaker.bem.run import Observation
 
 P_REF_PEAK = 20e-6 * np.sqrt(2)  # Pa peak at 0 dB SPL
 
-LW_H_ANGLES = (0, 10, 20, 30)  # horizontal; plus the mirror angles, with the 23° pair
+LW_H_ANGLES = (0, 10, 20, 30)  # horizontal, positive side only; plus the two az 23 el +-10 directions
 FLOOR_V = (-20, -30, -40)
 CEILING_V = (40, 50, 60)
 FRONT_H = (0, 10, 20, 30)  # ±, 0 once
@@ -55,13 +55,13 @@ def _ring(angles: np.ndarray, idx: np.ndarray, wanted) -> list[int]:
     return out
 
 
-def spinorama(total: np.ndarray, obs: Observation) -> Spin:
+def spinorama(total: np.ndarray, obs: Observation, *, f: np.ndarray | None = None) -> Spin:
     """Spinorama curves from total (nf, nd) complex peak Pa over obs.dirs."""
     h = lambda angs: _ring(obs.h_angles, obs.h_idx, angs)  # noqa: E731
     v = lambda angs: _ring(obs.v_angles, obs.v_idx, angs)  # noqa: E731
     pm = lambda angs: [*angs, *(-a for a in angs if a)]  # noqa: E731
 
-    lw_idx = h(pm(LW_H_ANGLES)) + list(obs.lw_extra_idx)
+    lw_idx = h(LW_H_ANGLES) + list(obs.lw_extra_idx)
     parts_idx = {
         "floor": v(FLOOR_V),
         "ceiling": v(CEILING_V),
@@ -74,7 +74,7 @@ def spinorama(total: np.ndarray, obs: Observation) -> Spin:
     er = _db(np.mean([_p2(total, ix) for ix in parts_idx.values()], axis=0))
     sp = _db(np.sum(np.abs(total[:, obs.sphere_idx]) ** 2 * obs.sphere_w, axis=1))
     return Spin(
-        f=None,
+        f=f,
         on_axis=_db(_p2(total, h([0]))),
         at23=_db(_p2(total, [obs.at23_idx])),
         lw=lw, er=er, sp=sp, erdi=lw - er, spdi=lw - sp, er_parts=er_parts,

@@ -31,3 +31,28 @@ def test_level_match_and_omni_spin():
     s = spinorama(total, w.obs)
     assert np.allclose(s.lw, s.on_axis, atol=1e-6) and np.allclose(s.sp, s.on_axis, atol=1e-6)
     assert np.allclose(s.spdi, 0.0, atol=1e-6)
+
+
+def test_level_match_uses_exact_23_direction():
+    w = _ways(lambda d: np.ones(len(d)))
+    o = w.obs
+    hf = np.ones(len(o.dirs))
+    hf[o.at23_idx] = 10.0  # 20 deg and 25 deg stay at 1
+    w.ways["coax_hf"] = np.broadcast_to(hf, w.ways["coax_hf"].shape).astype(complex)
+    _, gains = apply_crossover(w, FixedCrossover())
+    assert gains["coax_hf"] == pytest.approx(-20.0, abs=1e-6)
+
+
+def test_each_way_gets_its_filter():
+    o = observation_set(2.0)
+    f = np.geomspace(20, 20000, 200)
+    w = Ways(f, o, {k: np.ones((len(f), len(o.dirs)), complex) for k in ("bass", "coax_lf", "coax_hf")}, {})
+    total, gains = apply_crossover(w, FixedCrossover())
+    assert gains == {"coax_lf": 0.0, "coax_hf": 0.0, "bass": 0.0}
+    t = total[:, 0]
+    lo, hi = f < 40, f > 8000  # one way dominates, the others are 40+ dB down
+    assert np.allclose(t[lo], lr4(f[lo], 170, "low"), atol=5e-3)
+    assert np.allclose(t[hi], lr4(f[hi], 1400, "high"), atol=5e-3)
+    fm = f[(f > 400) & (f < 700)]  # all three ways contribute, each through its own filter
+    ref = lr4(fm, 170, "low") + lr4(fm, 170, "high") * lr4(fm, 1400, "low") + lr4(fm, 1400, "high")
+    assert np.allclose(t[(f > 400) & (f < 700)], ref, atol=1e-12)
