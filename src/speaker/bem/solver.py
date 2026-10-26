@@ -13,6 +13,7 @@ from outside); v_n is positive outward.
 from __future__ import annotations
 
 import warnings
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import bempp_cl.api as bempp
@@ -67,6 +68,31 @@ def _neumann_data(space, mass, tags: np.ndarray, n_src: int) -> np.ndarray:
     return g / q
 
 
+def _assemble(space, k: float, mass) -> tuple[np.ndarray, Callable[[np.ndarray], np.ndarray]]:
+    """Burton–Miller system at wavenumber k: dense A, and a function applying B to Neumann data.
+
+    A = 0.5*I - K + eta*W and B = -V - eta*(Kp + 0.5*I), with eta = i/k (bempp sign
+    convention, P1/P1/P1). B is never formed; its terms are applied one at a time.
+    """
+    eta = 1j / k
+    mass_coo = mass.tocoo()
+    a = helmholtz.double_layer(space, space, space, k).weak_form().to_dense()
+    np.negative(a, out=a)
+    a[mass_coo.row, mass_coo.col] += 0.5 * mass_coo.data
+    tmp = helmholtz.hypersingular(space, space, space, k).weak_form().to_dense()
+    tmp *= eta
+    a += tmp
+    del tmp
+
+    def apply_b(neumann: np.ndarray) -> np.ndarray:
+        rhs = -(helmholtz.single_layer(space, space, space, k).weak_form().to_dense() @ neumann)
+        rhs -= eta * (helmholtz.adjoint_double_layer(space, space, space, k).weak_form().to_dense() @ neumann)
+        rhs -= eta * (mass @ neumann) * 0.5
+        return rhs
+
+    return a, apply_b
+
+
 def solve_band(
     mesh: SurfaceMesh,
     freqs: np.ndarray,
@@ -106,27 +132,13 @@ def solve_band(
         ident = sparse.identity(space, space, space)
         mass = ident.weak_form().to_sparse()  # P1 mass matrix
         g = _neumann_data(space, mass, tags, n_src)
-        mass_coo = mass.tocoo()
 
         for i, f in enumerate(freqs):
             w = 2 * np.pi * f
             k = w / C
-            eta = 1j / k
             neumann = 1j * RHO * w * g  # ∂p/∂n = iωρ v_n
-
-            # A = 0.5*I - K + eta*W, accumulated in one dense array.
-            a = helmholtz.double_layer(space, space, space, k).weak_form().to_dense()
-            np.negative(a, out=a)
-            a[mass_coo.row, mass_coo.col] += 0.5 * mass_coo.data
-            tmp = helmholtz.hypersingular(space, space, space, k).weak_form().to_dense()
-            tmp *= eta
-            a += tmp
-            del tmp
-
-            # rhs = B @ neumann with B = -V - eta*(Kp + 0.5*I), applied term by term.
-            rhs = -(helmholtz.single_layer(space, space, space, k).weak_form().to_dense() @ neumann)
-            rhs -= eta * (helmholtz.adjoint_double_layer(space, space, space, k).weak_form().to_dense() @ neumann)
-            rhs -= eta * (mass @ neumann) * 0.5
+            a, apply_b = _assemble(space, k, mass)
+            rhs = apply_b(neumann)
 
             # a is C-ordered, so a.T is Fortran-ordered and factors in place; trans=1 solves a x = rhs.
             lu = lu_factor(a.T, overwrite_a=True, check_finite=False)

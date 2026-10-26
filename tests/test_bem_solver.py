@@ -1,7 +1,8 @@
 import numpy as np, pytest
 from speaker.bem import analytic
-from speaker.bem.solver import SurfaceMesh, solve_band, estimate_bytes
+from speaker.bem.solver import SurfaceMesh, solve_band, estimate_bytes, _assemble
 import bempp_cl.api as bempp
+from bempp_cl.api.operators.boundary import sparse
 
 def _sphere(n, a, cap_alpha=None):
     g = bempp.shapes.regular_sphere(n)
@@ -16,7 +17,9 @@ def _sphere(n, a, cap_alpha=None):
 def test_pulsating_sphere_matches_analytic(f):
     m = _sphere(4, 0.15)
     p = solve_band(m, np.array([f]), np.array([[0.0], [-2.0], [0.0]]))[0, 0, 0]
-    assert 20 * np.log10(abs(p) / abs(analytic.pulsating_sphere(f, 0.15, 2.0))) == pytest.approx(0, abs=0.2)
+    ref = analytic.pulsating_sphere(f, 0.15, 2.0)
+    assert 20 * np.log10(abs(p) / abs(ref)) == pytest.approx(0, abs=0.2)
+    assert abs(np.degrees(np.angle(p / ref))) < 2  # both e^{-iωt}
 
 @pytest.mark.bem
 def test_cap_on_sphere_polar_matches_analytic():
@@ -27,6 +30,18 @@ def test_cap_on_sphere_polar_matches_analytic():
     ref = np.array([analytic.cap_on_sphere(1000.0, 0.15, np.radians(30), 2.0, t) for t in th])
     err = 20 * np.log10(np.abs(p) / np.abs(ref))
     assert np.all(np.abs(err[:4]) < 0.5) and abs(err[4]) < 1.0
+    assert np.all(np.abs(np.degrees(np.angle(p[:4] / ref[:4]))) < 2)  # both e^{-iωt}
+
+@pytest.mark.bem
+@pytest.mark.filterwarnings("ignore:Non-empty compiler output")
+@pytest.mark.parametrize("ka", [np.pi, 4.493])  # zeros of j0 (where plain CBIE fails for monopole data) and of j0'
+def test_burton_miller_system_is_well_conditioned_at_interior_resonances(ka):
+    m = _sphere(4, 0.15)
+    grid = bempp.Grid(np.ascontiguousarray(m.vertices.T), np.ascontiguousarray(m.triangles.T, dtype=np.uint32))
+    space = bempp.function_space(grid, "P", 1)
+    a, _ = _assemble(space, ka / 0.15, sparse.identity(space, space, space).weak_form().to_sparse())
+    cond = np.linalg.cond(a)
+    assert cond < 20
 
 def test_memory_guard_refuses_before_assembly():
     v = np.random.rand(3 * 40000, 3); t = np.arange(3 * 40000).reshape(-1, 3)
