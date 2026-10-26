@@ -27,6 +27,7 @@ import cadquery as cq
 from ..drivers import Driver
 from ..layout import Layout
 from ..params import Params
+from .fillers import filler_solids
 
 BOLT_HOLE_D = 6.0  # mm
 POCKET_CLEARANCE = 2.0  # mm added to driver outer_d for the flange pocket
@@ -206,4 +207,6 @@ def assembly(l: Layout, p: Params, coax: Driver, bass: Driver) -> cq.Assembly:
     cx, cz = (_mm(v) for v in l.coax_centre)
     insert_loc = _placement((cx, _mm(p.cabinet.panel_t), cz), (1, 0, 0), (0, 0, 1))
     asm.add(flare_insert(l, p, coax), name="flare_insert", loc=insert_loc)
+    for name, solid in filler_solids(l).items():  # already in global coordinates
+        asm.add(solid, name=name)
     return asm

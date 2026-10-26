@@ -19,10 +19,10 @@ def test_assembly_bbox_mm():
     bb = assembly(L, P, CX, B).toCompound().BoundingBox()
     assert (bb.xlen, bb.ylen, bb.zlen) == pytest.approx((320, 350, L.height * 1000), abs=0.5)
 
-def test_side_has_six_vent_slots():
+def test_side_has_twelve_vent_slots():
     side = next(pn for pn in build_panels(L, P, CX, B) if pn.name == "side_left")
     slots = [f for f in side.features if f.shape == "slot"]
-    assert len(slots) == 6 and all(f.corner_r_mm >= 3 for f in slots)
+    assert len(slots) == 12 and all(f.corner_r_mm >= 3 for f in slots)
 
 def test_inner_corner_radii_at_least_3mm():
     for pn in build_panels(L, P, CX, B):
@@ -37,9 +37,9 @@ def test_flare_insert_dims():
     assert bb.zlen == pytest.approx(18.0, abs=0.2)
 
 def _assert_no_intersections(l, p):
-    # Every placed part of the assembly (8 panels + flare insert), pairwise.
+    # Every placed part of the assembly (8 panels + flare insert + 5 fillers), pairwise.
     solids = {ch.name: ch.obj.val().moved(ch.loc) for ch in assembly(l, p, CX, B).children}
-    assert len(solids) == 9
+    assert len(solids) == 14
     for (na, a), (nb, b) in itertools.combinations(solids.items(), 2):
         vol = a.intersect(b).Volume()
         assert vol < 1.0, f"{na} and {nb} intersect by {vol:.1f} mm^3"

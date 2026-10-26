@@ -13,6 +13,7 @@ from dataclasses import dataclass
 
 from .cardioid import CardioidParams
 from .drivers import Driver
+from .fillers import Fillers, compute_fillers
 from .params import Params
 
 DIVIDER_CLEARANCE = 0.010  # m between coax frame bottom and divider top
@@ -31,12 +32,14 @@ class Layout:
     divider_z: float  # bottom face of the divider
     coax_chamber_gross: float
     coax_chamber_net: float
-    filler_volume: float  # NOT modelled in the CAD; the builder adds it
-    coax_chamber_as_built: float  # gross less coax displacement, i.e. without filler
+    filler_volume: float  # printed fillers (in the CAD), all five parts
+    coax_chamber_empty: float  # gross less coax displacement, i.e. without fillers
+    coax_chamber_as_built: float  # empty less fillers; fed to the cardioid model
     bass_gross: float
     bass_net: float
     vent_slots: tuple[tuple[float, float, float, float], ...]  # (y, z, w, h)
     warnings: tuple[str, ...] = ()
+    fillers: Fillers | None = None  # None only inside compute_layout, before validation
 
 
 def _displacement(d: Driver) -> float:
@@ -57,8 +60,7 @@ def compute_layout(p: Params, coax: Driver, bass: Driver) -> Layout:
     bass_gross = interior_w * interior_d * (divider_z - c.panel_t)
     bass_net = bass_gross - 2 * _displacement(bass)
     coax_net = c.coax_chamber_net_volume
-    coax_as_built = coax_gross - _displacement(coax)
-    filler = coax_as_built - coax_net
+    coax_empty = coax_gross - _displacement(coax)
 
     # Slots: one side's stack, centred vertically on the coax chamber.
     z_mid = (divider_top + top_underside) / 2
@@ -77,13 +79,18 @@ def compute_layout(p: Params, coax: Driver, bass: Driver) -> Layout:
         divider_z=divider_z,
         coax_chamber_gross=coax_gross,
         coax_chamber_net=coax_net,
-        filler_volume=filler,
-        coax_chamber_as_built=coax_as_built,
+        filler_volume=0.0,
+        coax_chamber_empty=coax_empty,
+        coax_chamber_as_built=coax_empty,
         bass_gross=bass_gross,
         bass_net=bass_net,
         vent_slots=vent_slots,
     )
     validate(layout, p, coax, bass)
+    fillers = compute_fillers(
+        p, coax, coax_centre=layout.coax_centre, chamber_z=(divider_top, top_underside),
+        volume_to_fill=coax_empty - coax_net,
+    )
     warns: list[str] = []
     if bass_net < BASS_NET_TARGET:
         warns.append(
@@ -96,7 +103,13 @@ def compute_layout(p: Params, coax: Driver, bass: Driver) -> Layout:
             f"coax centre {_mm(c.coax_centre_z)} differs from the seat ear height {_mm(ear)} "
             f"by more than {_mm(EAR_HEIGHT_TOLERANCE)}"
         )
-    return dataclasses.replace(layout, warnings=tuple(warns))
+    return dataclasses.replace(
+        layout,
+        fillers=fillers,
+        filler_volume=fillers.total_volume,
+        coax_chamber_as_built=coax_empty - fillers.total_volume,
+        warnings=tuple(warns),
+    )
 
 
 def cardioid_params(p: Params, l: Layout, coax: Driver) -> CardioidParams:
@@ -106,7 +119,7 @@ def cardioid_params(p: Params, l: Layout, coax: Driver) -> CardioidParams:
     x = -(v.centre_from_front - c.baffle_t)
     half = c.width / 2
     return CardioidParams(
-        chamber_volume=l.coax_chamber_net,
+        chamber_volume=l.coax_chamber_as_built,
         vent_area=2 * v.slots_per_side * v.slot_w * v.slot_h,
         vent_length=c.panel_t,
         vent_resistance=v.specific_resistance,
@@ -168,10 +181,10 @@ def validate(l: Layout, p: Params, coax: Driver, bass: Driver) -> None:
             f"upper bass frame overlaps the divider: frame top at "
             f"{_mm(z2 + bass.outer_d / 2)}, divider bottom face at {_mm(l.divider_z)}"
         )
-    if l.filler_volume < 0:
+    if l.coax_chamber_empty < l.coax_chamber_net:
         raise ValueError(
             f"coax chamber too small: gross {l.coax_chamber_gross * 1000:.2f} L less coax "
-            f"displacement is {l.coax_chamber_as_built * 1000:.2f} L "
+            f"displacement is {l.coax_chamber_empty * 1000:.2f} L "
             f"net-available, below target {l.coax_chamber_net * 1000:.2f} L"
         )
     back = c.depth - c.panel_t
