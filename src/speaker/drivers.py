@@ -30,6 +30,10 @@ class Driver:
     magnet_d: float  # m
     sens_db: float  # datasheet, informational
     hf_sens_db: float | None = None
+    diaphragm_d: float | None = None  # m
+    cone_depth: float | None = None  # m, surround plane to cone inner edge
+    cone_inner_d: float | None = None  # m
+    hf_exit_d: float | None = None  # m
 
     @property
     def qts(self) -> float:
@@ -52,16 +56,24 @@ class Driver:
         return 2 * math.pi * self.fs * self.mms / self.qms
 
 
+def _opt_mm(raw: dict, key: str) -> float | None:
+    return raw[key] / 1000.0 if key in raw else None
+
+
 def load_driver(stem: str) -> Driver:
     with open(DRIVERS_DIR / f"{stem}.toml", "rb") as fh:
         raw = tomllib.load(fh)
+    sd = raw["sd_cm2"] / 10000.0
+    diaphragm_d = _opt_mm(raw, "diaphragm_d_mm")
+    if diaphragm_d is None:
+        diaphragm_d = math.sqrt(4 * sd / math.pi)
     return Driver(
         name=raw["name"],
         fs=float(raw["fs"]),
         qes=float(raw["qes"]),
         qms=float(raw["qms"]),
         vas=raw["vas_l"] / 1000.0,
-        sd=raw["sd_cm2"] / 10000.0,
+        sd=sd,
         re=float(raw["re"]),
         le=raw["le_mh"] / 1000.0,
         xmax=raw["xmax_mm"] / 1000.0,
@@ -73,4 +85,8 @@ def load_driver(stem: str) -> Driver:
         magnet_d=raw["magnet_d_mm"] / 1000.0,
         sens_db=float(raw["sens_db"]),
         hf_sens_db=float(raw["hf_sens_db"]) if "hf_sens_db" in raw else None,
+        diaphragm_d=diaphragm_d,
+        cone_depth=_opt_mm(raw, "cone_depth_mm"),
+        cone_inner_d=_opt_mm(raw, "cone_inner_d_mm"),
+        hf_exit_d=_opt_mm(raw, "hf_exit_d_mm"),
     )
