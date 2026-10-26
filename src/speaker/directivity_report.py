@@ -23,8 +23,10 @@ from pathlib import Path
 import numpy as np
 
 from . import directivity_plots as plots
+from .bem import run as bem_run
 from .bem.mesh import cabinet_mesh
-from .bem.run import BAND_EDGES, PUCK_F_RANGE, SourceField, cabinet_field, freq_grid, puck_field
+from .bem.run import (BAND_EDGES, CAB_H_COAX, CAB_H_VENT, PUCK_F_RANGE, SourceField, cabinet_field, freq_grid,
+                      puck_field)
 from .bem.solver import BEM_MEMORY_BUDGET, estimate_bytes
 from .cardioid import front_back, simulate
 from .constants import C
@@ -34,16 +36,20 @@ from .drivers import Driver, load_driver
 from .layout import Layout, cardioid_params, compute_layout
 from .params import DEFAULT_PATH, Params, load_params
 from .report import FB_AIM_BAND, FB_BAND
-from .scores import LW_RING, Score, score_all
+from .scores import LW_RING, REAR_H, ROLL_ANGLES, Score, score_all
 from .spinorama import P_REF_PEAK, Spin, spinorama
-from .system import COAX_CURVES, V_DRIVE, Ways, coax_section, vent_scaled_section, way_responses
+from .system import (COAX_CURVES, PUCK_HOLD_F, V_DRIVE, Ways, coax_section, vent_scaled_section,
+                     way_responses)
 
 CACHE_DIR = Path("out/cache/bem")
 CAB_H_MAX = 0.05  # m, cabinet mesh size cap of the full run and the mesh check
 FULL_GRID = (50.0, 20000.0, 12)  # f_lo, f_hi, points per octave
 FAST_GRID = (50.0, 1000.0, 6)
+SCORE_EDGES = (150.0, 300.0, 500.0, 2000.0, 5000.0)  # Hz, score band edges added to the output grids
 FAST_H_MAX = 0.08  # m
 COARSE = 6.0  # elements per wavelength of the run the mesh check verifies
+FINE = 8.0  # elements per wavelength of the mesh check's finer run; all mesh sizes scale by COARSE / FINE
+REJ_BAND = (150.0, 500.0)  # Hz, where the mesh check compares the coax-section rear rejection
 MAX_DEV_DB = 0.5  # mesh check: allowed |dB| change on refinement
 UNVERIFIED_LIMIT = 3000.0  # Hz, trusted limit without a mesh check
 VENT_SPREAD = (0.7, 1.3)  # vent resistance factors for the felt's unknown resistance
@@ -59,6 +65,16 @@ class _Design:
     coax: Driver
     bass: Driver
     layout: Layout
+
+
+def _grid(spec: tuple[float, float, int]) -> np.ndarray:
+    """freq_grid(*spec) with the score band edges inside its range added."""
+    g = freq_grid(*spec)
+    return np.union1d(g, [e for e in SCORE_EDGES if g[0] <= e <= g[-1]])
+
+
+def _params_sha(d: _Design) -> str:
+    return hashlib.sha256(d.path.read_bytes()).hexdigest()
 
 
 def _design(params_path: Path | None) -> _Design:
@@ -128,44 +144,71 @@ def _jsonable(x):
 
 # ---------------------------------------------------------------- mesh check
 
-def _fine_dofs(p: Params, coax: Driver, bass: Driver, h: float) -> int:
-    """P1 node count of the cabinet mesh at size h."""
-    return len(np.unique(cabinet_mesh(p, coax, bass, h=h).triangles))
+def _fine_dofs(p: Params, coax: Driver, bass: Driver, h: float, h_coax: float, h_vent: float) -> int:
+    """P1 node count of the cabinet mesh with these sizes."""
+    return len(np.unique(cabinet_mesh(p, coax, bass, h=h, h_coax=h_coax, h_vent=h_vent).triangles))
 
 
-def mesh_check(params_path: Path | None, out_dir: Path, *, f_max: float = 4000.0, fine: float = 8.0) -> Path:
+def _mesh_sizes(edge: float, per_wavelength: float) -> tuple[float, float, float]:
+    """(h, h_coax, h_vent) of the band below `edge`: COARSE gives the full run's mesh; a denser
+    per_wavelength scales h_max, h_coax and h_vent by COARSE / per_wavelength as well."""
+    s = COARSE / per_wavelength
+    return min(CAB_H_MAX * s, C / (edge * per_wavelength)), CAB_H_COAX * s, CAB_H_VENT * s
+
+
+_COMPARED = ("the 23° curve, listening window, early reflections and sound power, and H 0-30° (5° steps), after "
+             "the crossover, over the whole grid; H ±40-90° (10° steps, both sides) after the crossover, over the "
+             "whole grid; and the coax-section rear rejection L(0°) - L(θ) for θ = ±120-180° (5° steps, before "
+             "the crossover) over 150-500 Hz")
+
+
+def _check_curves(d: _Design, fld: SourceField) -> np.ndarray:
+    """(n_curves, nf) dB curves the mesh check compares; NaN where a curve is not compared."""
+    ways, total, _, spin = _evaluate(d, fld, None, fld.f, float(fld.f[-1]), FixedCrossover())
+    obs, lv = fld.obs, _spl(total)
+    sec = _spl(coax_section(ways))
+    out_rej = (fld.f < REJ_BAND[0]) | (fld.f > REJ_BAND[1])
+    rej = [sec[:, _h(obs, 0)] - sec[:, _h(obs, a)] for a in REAR_H]
+    for r in rej:
+        r[out_rej] = np.nan
+    return np.stack([spin.at23, spin.lw, spin.er, spin.sp, *(lv[:, _h(obs, a)] for a in LW_RING),
+                     *(lv[:, _h(obs, sg * a)] for a in ROLL_ANGLES for sg in (1, -1)), *rej])
+
+
+def mesh_check(params_path: Path | None, out_dir: Path, *, f_max: float = 4000.0, fine: float = FINE) -> Path:
     """Compare the cabinet run at COARSE and fine elements per wavelength up to f_max.
 
-    Per 1/3-octave band: the max |dB| difference over the grid points and over the at23, LW, ER,
-    SP and H 0-30 curves after the crossover. The trusted limit is the upper edge of the highest
+    The coarse run is the full run's mesh; the fine run scales h_max, h_coax and h_vent by
+    COARSE / fine too (_mesh_sizes). Per 1/3-octave band: the max |dB| difference over the grid
+    points and over the curves in _COMPARED. The trusted limit is the upper edge of the highest
     band that, with every band below it, differs by <= MAX_DEV_DB, capped at the top solved
     frequency. A fine mesh over BEM_MEMORY_BUDGET stops the check at that band. If no band
     converges, the JSON is still written and ValueError is raised.
     """
     d = _design(params_path)
-    f = freq_grid(FULL_GRID[0], f_max, FULL_GRID[2])
+    g = _grid(FULL_GRID)
+    f = g[g <= f_max]
     band = np.searchsorted(BAND_EDGES, f)
     if band.max() >= len(BAND_EDGES):
         raise ValueError(f"f_max {f_max:g} Hz is above the last band edge, {BAND_EDGES[-1]:g} Hz")
-    kw = dict(params_text=d.text, h_max=CAB_H_MAX, cache_dir=CACHE_DIR)
+    kw = dict(params_text=d.text, cache_dir=CACHE_DIR)
     coarse, refined, elements, capped = [], [], {}, False
     for b in np.unique(band):
         edge, fb = BAND_EDGES[b], f[band == b]
-        h_c, h_f = (min(CAB_H_MAX, C / (edge * pw)) for pw in (COARSE, fine))
-        same = h_f == h_c
-        if not same:
-            need = estimate_bytes(_fine_dofs(d.p, d.coax, d.bass, h_f))
-            if need > BEM_MEMORY_BUDGET:
-                capped = True
-                print(f"mesh check: stopped at band <= {edge:g} Hz, its fine mesh needs about "
-                      f"{need / 1e9:.1f} GB (budget {BEM_MEMORY_BUDGET / 1e9:.1f} GB)", file=sys.stderr)
-                break
+        h_f, hc_f, hv_f = _mesh_sizes(edge, fine)
+        need = estimate_bytes(_fine_dofs(d.p, d.coax, d.bass, h_f, hc_f, hv_f))
+        if need > BEM_MEMORY_BUDGET:
+            capped = True
+            print(f"mesh check: stopped at band <= {edge:g} Hz, its fine mesh needs about "
+                  f"{need / 1e9:.1f} GB (budget {BEM_MEMORY_BUDGET / 1e9:.1f} GB)", file=sys.stderr)
+            break
         t0 = time.perf_counter()
-        c = cabinet_field(d.p, d.coax, d.bass, fb, per_wavelength=COARSE, **kw)
-        r = c if same else cabinet_field(d.p, d.coax, d.bass, fb, per_wavelength=fine, **kw)
+        c = cabinet_field(d.p, d.coax, d.bass, fb, per_wavelength=COARSE, h_max=CAB_H_MAX, **kw)
+        r = cabinet_field(d.p, d.coax, d.bass, fb, per_wavelength=fine, h_max=CAB_H_MAX * COARSE / fine,
+                          h_coax=hc_f, h_vent=hv_f, **kw)
         coarse.append(c)
         refined.append(r)
-        elements[f"{edge:g}"] = {"same_mesh": same, "coarse": c.meta["bands"][0], "fine": r.meta["bands"][0]}
+        elements[f"{edge:g}"] = {"coarse": c.meta["bands"][0], "fine": r.meta["bands"][0]}
         print(f"mesh check: band <= {edge:g} Hz, {c.meta['bands'][0]['triangles']} / "
               f"{r.meta['bands'][0]['triangles']} elements, {time.perf_counter() - t0:.1f} s",
               file=sys.stderr, flush=True)
@@ -173,13 +216,7 @@ def mesh_check(params_path: Path | None, out_dir: Path, *, f_max: float = 4000.0
         raise ValueError("mesh check: the first band's fine mesh is over the memory budget")
 
     fc, fr = _concat(coarse), _concat(refined)
-    curves = []
-    for fld in (fc, fr):
-        _, total, _, spin = _evaluate(d, fld, None, fld.f, float(fld.f[-1]), FixedCrossover())
-        lv = _spl(total)
-        curves.append(np.stack([spin.at23, spin.lw, spin.er, spin.sp,
-                                *(lv[:, _h(fld.obs, a)] for a in LW_RING)]))
-    dev = np.abs(curves[0] - curves[1]).max(axis=0)
+    dev = np.nanmax(np.abs(_check_curves(d, fc) - _check_curves(d, fr)), axis=0)
     k = np.floor(3 * np.log2(fc.f / 1000.0) + 0.5).astype(int)  # nominal 1/3-octave band index
     band_dev, limit, ok = {}, 0.0, True
     for q in np.unique(k):
@@ -188,15 +225,21 @@ def mesh_check(params_path: Path | None, out_dir: Path, *, f_max: float = 4000.0
         ok = ok and v <= MAX_DEV_DB
         if ok:
             limit = 1000.0 * 2.0 ** ((q + 0.5) / 3)
+    s = COARSE / fine
     out = {
         "trusted_limit_hz": min(limit, float(fc.f[-1])),  # never past the top solved frequency
         "band_max_dev_db": band_dev,
         "per_wavelength": [COARSE, float(fine)],
+        "h_max_m": CAB_H_MAX,
+        "mesh_sizes_m": {"coarse": {"h_max": CAB_H_MAX, "h_coax": CAB_H_COAX, "h_vent": CAB_H_VENT},
+                         "fine": {"h_max": CAB_H_MAX * s, "h_coax": CAB_H_COAX * s, "h_vent": CAB_H_VENT * s}},
+        "compared": _COMPARED,
         "elements": elements,
         "capped_by_memory": capped,
         "f_max_hz": float(f_max),
-        "h_max_m": CAB_H_MAX,
         "max_dev_db": MAX_DEV_DB,
+        "params_sha256": _params_sha(d),
+        "code_version": bem_run.code_version(),
     }
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -225,21 +268,35 @@ def _trusted_value(scores: list[Score], key: str) -> float:
     return next(s.value for s in scores if s.key == key and s.confidence == "trusted")
 
 
-def _trusted_limit(mc: dict | None, *, cab_top: float, f_top: float, puck: bool) -> tuple[float, str]:
+def _usable_mesh_check(mc: dict | None, d: _Design, *, h_max: float, per_wavelength: float) -> tuple[dict | None, str]:
+    """mc if it was made for this run (params, code version, mesh densities, h_max), else (None, why not)."""
+    if mc is None:
+        return None, "no mesh check in this output directory (run with --mesh-check)"
+    want = {"params_sha256": ("params", _params_sha(d)), "code_version": ("code version", bem_run.code_version()),
+            "per_wavelength": ("per_wavelength", [float(per_wavelength), FINE]), "h_max_m": ("h_max", h_max)}
+    bad = [f"{what} {mc.get(k)!r} vs {v!r}" if k in ("per_wavelength", "h_max_m") else what
+           for k, (what, v) in want.items() if mc.get(k) != v]
+    if bad:
+        return None, "mesh_check.json is not for this run (" + "; ".join(bad) + "), so it is ignored"
+    return mc, ""
+
+
+def _trusted_limit(mc: dict | None, *, cab_top: float, f_top: float, puck_lo: float | None) -> tuple[float, str]:
     """The trusted limit and its header text, from the mesh check or UNVERIFIED_LIMIT.
 
     When the grid goes past the cabinet field (cab_top), a limit above it is capped there. A limit
-    below what the run needs (2 x the puck's lowest frequency for the cabinet-to-puck blend, or the
-    top of a puck-less grid) raises ValueError.
+    below what the run needs (2 x the puck's lowest frequency puck_lo for the cabinet-to-puck blend,
+    or the top of a puck-less grid) raises ValueError.
     """
     tl = float(mc["trusted_limit_hz"]) if mc else UNVERIFIED_LIMIT
     note = "" if mc else " (unverified)"
     if f_top > cab_top and tl > cab_top:
         note += f" (from {tl:.0f} Hz, capped at the top of the cabinet field)"
         tl = cab_top
-    need = 2 * PUCK_F_RANGE[0] if puck else f_top
+    need = 2 * puck_lo if puck_lo is not None else f_top
     if tl < need:
-        why = "the cabinet-to-puck blend starts at half of it" if puck else "a run without the puck stops at it"
+        why = ("the cabinet-to-puck blend starts at half of it" if puck_lo is not None
+               else "a run without the puck stops at it")
         raise ValueError(f"trusted 3D limit {tl:.0f} Hz is below {need:.0f} Hz, which this run needs ({why})")
     return tl, f"{tl:.0f} Hz{note}"
 
@@ -250,29 +307,34 @@ def run_directivity(params_path: Path | None, out_dir: Path, *, fast: bool = Fal
     d = _design(params_path)
     out_dir = Path(out_dir)
     mc_path = out_dir / "mesh_check.json"
-    mc = json.loads(mc_path.read_text()) if mc_path.exists() else None
-    f = freq_grid(*(FAST_GRID if fast else FULL_GRID))
+    h_max = FAST_H_MAX if fast else CAB_H_MAX
+    mc, mc_why = _usable_mesh_check(json.loads(mc_path.read_text()) if mc_path.exists() else None, d,
+                                    h_max=h_max, per_wavelength=per_wavelength)
+    f = _grid(FAST_GRID if fast else FULL_GRID)
     f_cab = f if fast else f[f <= f_max_3d]
-    tl, tl_text = _trusted_limit(mc, cab_top=float(f_cab[-1]), f_top=float(f[-1]), puck=not fast)
+    fp = None
+    if not fast:  # the puck's grid points, ending on the hold frequency when the grid goes past it
+        fp = f[(f >= PUCK_F_RANGE[0]) & (f <= PUCK_F_RANGE[1])]
+        if f[-1] > PUCK_HOLD_F:
+            fp = np.union1d(fp, [PUCK_HOLD_F])
+    tl, tl_text = _trusted_limit(mc, cab_top=float(f_cab[-1]), f_top=float(f[-1]),
+                                 puck_lo=None if fp is None else float(fp[0]))
     kw = dict(params_text=d.text, per_wavelength=per_wavelength, cache_dir=CACHE_DIR)
     t0 = time.perf_counter()
-    if fast:
-        cab = _banded(lambda x: cabinet_field(d.p, d.coax, d.bass, x, h_max=FAST_H_MAX, **kw), f_cab, "cabinet")
-        puck = None
-    else:
-        cab = _banded(lambda x: cabinet_field(d.p, d.coax, d.bass, x, h_max=CAB_H_MAX, **kw), f_cab, "cabinet")
-        fp = f[(f >= PUCK_F_RANGE[0]) & (f <= PUCK_F_RANGE[1])]
-        puck = _banded(lambda x: puck_field(d.p, d.coax, x, **kw), fp, "puck")
+    cab = _banded(lambda x: cabinet_field(d.p, d.coax, d.bass, x, h_max=h_max, **kw), f_cab, "cabinet")
+    puck = None if fp is None else _banded(lambda x: puck_field(d.p, d.coax, x, **kw), fp, "puck")
     xo = FixedCrossover()
     ways, total, gains, spin = _evaluate(d, cab, puck, f, tl, xo)
     obs, sec = ways.obs, coax_section(ways)
-    scores = score_all(f, total, sec, obs, spin, trusted_limit=tl, xo=xo)
+    blend, far = ways.meta["puck_blend"], ways.meta["coax_far_h0_h180"]
+    scores = score_all(f, total, sec, obs, spin, trusted_limit=tl, xo=xo, puck_blend=blend, coax_far=far)
 
     # Cardioid: the vent resistance spread (same fields), and the lumped model for comparison.
     cp = cardioid_params(d.p, d.layout, d.coax)
     spread = {s: vent_scaled_section(ways, cab, d.coax, cp, s) for s in VENT_SPREAD}
     spread_scores = {1.0: scores}
-    spread_scores.update({s: score_all(f, total, x, obs, spin, trusted_limit=tl, xo=xo) for s, x in spread.items()})
+    spread_scores.update({s: score_all(f, total, x, obs, spin, trusted_limit=tl, xo=xo, puck_blend=blend)
+                          for s, x in spread.items()})
     vent = {k: {s: _trusted_value(sc, k) for s, sc in spread_scores.items()} for k in ("cardioid_hard", "cardioid_aim")}
     i0, i180 = _h(obs, 0), _h(obs, -180)
     rej = lambda x: _spl(x[:, i0]) - _spl(x[:, i180])  # noqa: E731
@@ -286,23 +348,24 @@ def run_directivity(params_path: Path | None, out_dir: Path, *, fast: bool = Fal
     lv = _spl(total)
     for plane, ang, idx in (("H", obs.h_angles, obs.h_idx), ("V", obs.v_angles, obs.v_idx)):
         plots.polar_map(plot_dir / f"polar_{plane.lower()}.png", f, ang, lv[:, idx] - lv[:, [i0]],
-                        "Horizontal" if plane == "H" else "Vertical", tl, tl_text)
-    plots.spinorama(plot_dir / "spinorama.png", spin, f, tl, tl_text)
+                        "Horizontal" if plane == "H" else "Vertical", tl, tl_text, blend=blend)
+    plots.spinorama(plot_dir / "spinorama.png", spin, f, tl, tl_text, blend=blend)
     ref = smooth(f, lv[:, obs.at23_idx], 1 / 6)
     plots.window_family(plot_dir / "window_family.png", f,
-                        {a: smooth(f, lv[:, _h(obs, a)], 1 / 6) - ref for a in LW_RING}, tl, tl_text)
+                        {a: smooth(f, lv[:, _h(obs, a)], 1 / 6) - ref for a in LW_RING}, tl, tl_text, blend=blend)
     title = "Coax section rear rejection (cone + vents, before the crossover)"
     if max_diff > LUMPED_DIFF_DB:
         title += f"\nlumped vs BEM differ by > {LUMPED_DIFF_DB:g} dB (up to {max_diff:.1f} dB in 150-500 Hz)"
     lo, hi = (rej(spread[s])[: len(fr)] for s in VENT_SPREAD)
+    far_rej = None if far is None else (_spl(far[:, 0]) - _spl(far[:, 1]))[: len(fr)]
     plots.rear_rejection(plot_dir / "rear_rejection.png", fr, bem, lumped, (np.minimum(lo, hi), np.maximum(lo, hi)),
-                         f"x{VENT_SPREAD[0]:g}-x{VENT_SPREAD[1]:g}", title)
+                         f"x{VENT_SPREAD[0]:g}-x{VENT_SPREAD[1]:g}", title, far=far_rej)
     plots.whole_rear(plot_dir / "whole_rear.png", f[f <= min(f[-1], 2000.0)],
                      rej(total)[f <= min(f[-1], 2000.0)], xo.bass_coax)
 
     (out_dir / "scores.json").write_text(
         json.dumps(_jsonable([dataclasses.asdict(s) for s in scores]), indent=2, allow_nan=False))
-    page = _html(d, fast=fast, mc=mc, tl_text=tl_text, scores=scores, gains=gains, xo=xo, ways=ways,
+    page = _html(d, fast=fast, mc=mc, mc_why=mc_why, tl_text=tl_text, scores=scores, gains=gains, xo=xo, ways=ways,
                  vent=vent, cp=cp, max_diff=max_diff, fields={"cabinet": cab, "puck": puck},
                  wall=time.perf_counter() - t0)
     path = out_dir / "report.html"
@@ -333,14 +396,14 @@ def _row(cells: list[str], cls: str = "") -> str:
     return f"<tr{f' class={cls!r}' if cls else ''}>" + "".join(cells) + "</tr>"
 
 
-def _html(d: _Design, *, fast, mc, tl_text, scores, gains, xo, ways, vent, cp, max_diff, fields, wall) -> str:
+def _html(d: _Design, *, fast, mc, mc_why, tl_text, scores, gains, xo, ways, vent, cp, max_diff, fields, wall) -> str:
     e = html.escape
-    sha = hashlib.sha256(d.path.read_bytes()).hexdigest()
+    sha = _params_sha(d)
     head = [("Params", f"{e(str(d.path))}<br><code>sha256 {sha}</code>"),
             ("Code commit", e(_commit())),
             ("Date", e(datetime.datetime.now().strftime("%Y-%m-%d %H:%M"))),
             ("Design", "Round 0 — current design (baseline)"),
-            ("Trusted 3D limit", e(tl_text)),
+            ("Trusted 3D limit", e(tl_text) + (f"<br>{e(mc_why)}" if mc_why else "")),
             ("Mode", "fast (coarse mesh, 50 Hz-1 kHz, no puck)" if fast else "full")]
 
     def fig(name: str, caption: str) -> str:
@@ -355,12 +418,14 @@ def _html(d: _Design, *, fast, mc, tl_text, scores, gains, xo, ways, vent, cp, m
 
     r = cp.vent_resistance
     if mc:
-        how = (f"from mesh_check.json: {mc['per_wavelength'][0]:g} vs {mc['per_wavelength'][1]:g} elements per "
-               f"wavelength agree within {mc.get('max_dev_db', MAX_DEV_DB):g} dB up to {tl_text}")
+        pw = mc["per_wavelength"]
+        how = (f"from mesh_check.json: {pw[0]:g} vs {pw[1]:g} elements per wavelength (the finer mesh also has "
+               f"h_max, h_coax and h_vent scaled by {pw[0]:g}/{pw[1]:g}) agree within "
+               f"{mc.get('max_dev_db', MAX_DEV_DB):g} dB up to {tl_text}. Compared: {mc.get('compared', '')}")
         if mc.get("capped_by_memory"):
             how += "; the check stopped early because the finer mesh would not fit in memory"
     else:
-        how = f"{tl_text}: no mesh check in this output directory (run with --mesh-check)"
+        how = f"{tl_text}: {mc_why}"
     mismatch = ways.meta["lf_join_mismatch_db"]
     notes = [
         f"<b>Trusted 3D limit</b> {how}. Scores are split at the limit; rows above it are grey "
@@ -379,7 +444,33 @@ def _html(d: _Design, *, fast, mc, tl_text, scores, gains, xo, ways, vent, cp, m
         "driver is measured with a profile gauge. Above the trusted limit the coax's horn behaviour rests on them.",
         f"<b>LF join</b>: the lumped and datasheet coax LF volume velocities differ by {mismatch:+.1f} dB at "
         "400 Hz; the coax LF strength is blended between them across 300-500 Hz.",
+        "<b>Datasheet de-embedding</b>: above the LF join the coax LF volume velocity is the datasheet on-axis "
+        f"response divided by that of an infinite-baffle piston of the diaphragm diameter "
+        f"({d.coax.diaphragm_d * 1000:.0f} mm) at 1 m. The datasheet already contains the real cone and cavity "
+        "geometry, which the 3D field adds again, so this may double-count it. The coax HF volume velocity uses "
+        + ("the puck's on-axis response at 1 m (1/3-octave smoothed) as its reference."
+           if ways.meta["hf_reference"] == "puck" else
+           f"an infinite-baffle piston of the HF exit ({d.coax.hf_exit_d * 1000:.1f} mm) at 1 m as its reference "
+           "(no puck in this run)."),
+        "<b>Coax displacement and filler volumes</b> are estimates (spec §7.1.1/§8): the coax is a basket "
+        "cylinder until the driver is measured. The chamber volume, and with it the lumped cardioid model and "
+        "the vent strengths, rest on them.",
     ]
+    if ways.meta["puck_blend"] is not None:
+        lo, hi = ways.meta["puck_blend"]
+        notes.append(f"<b>Cabinet-to-puck blend</b>: from {lo:.0f} Hz to {hi:.0f} Hz, inside the trusted range, the "
+                     "coax LF and HF fields cross-fade from the cabinet BEM to the puck BEM (the coax on a round "
+                     "cylinder, with no cabinet facets or edges), log-linear in frequency; above it the puck "
+                     "alone. The range is hatched on the polar maps, spinorama and window family. Each score's "
+                     "detail in scores.json gives puck_fraction (the share of its band's grid points with any "
+                     "puck weight) and puck_mean_weight.")
+    far = [s for s in scores if s.key == "cardioid_hard_far"]
+    if far:
+        near = [s for s in scores if s.key == "cardioid_hard" and s.confidence == far[0].confidence]
+        notes.append("<b>Far field</b>: The gate is scored at 2 m (spec §4); far field is shown for reference. "
+                     f"At 50 m the coax section's 150-300 Hz rear rejection is {far[0].value:.1f} dB"
+                     + (f", against {near[0].value:.1f} dB at 2 m." if near else ".")
+                     + " The rear rejection plot shows both.")
     if fast:
         notes.append(f"<b>Fast mode</b>: coarse mesh (h_max {FAST_H_MAX * 1000:.0f} mm), 1/6-octave grid to 1 kHz, "
                      f"no puck. The coax HF gain ({gains['coax_hf']:+.1f} dB) comes from the datasheet on-axis curves, "
@@ -400,7 +491,8 @@ def _html(d: _Design, *, fast, mc, tl_text, scores, gains, xo, ways, vent, cp, m
         "<h1>Directivity report — Round 0</h1>",
         "<table class='meta'>" + "".join(_row([f"<td>{k}</td>", f"<td>{v}</td>"]) for k, v in head) + "</table>",
         "<h2>Curves</h2>",
-        fig("polar_h", "Horizontal polar map: level re on-axis at 2 m. The dashed line is the trusted 3D limit."),
+        fig("polar_h", "Horizontal polar map: level re on-axis at 2 m. The dashed line is the trusted 3D limit."
+                + (" Hatched: the cabinet-to-puck blend." if ways.meta["puck_blend"] is not None else "")),
         fig("polar_v", "Vertical polar map (positive angles up), normalised to on-axis."),
         fig("spinorama", "Spinorama at 2 m for 2.83 V into the coax LF way after the crossover. "
                          "Listening window: H 0/10/20/30° plus az 23° at el ±10°. DIs on the right axis."),

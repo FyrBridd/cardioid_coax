@@ -17,9 +17,14 @@ MAP_CONTOURS = (-20.0, -10.0, -6.0, -3.0)
 PRESENCE = (2000.0, 5000.0)  # Hz
 
 
-def _freq_axis(ax, f: np.ndarray, tl: float, tl_text: str) -> None:
-    """Log f axis over the grid, with the trusted 3D limit as a vertical line when it falls inside."""
+def _freq_axis(ax, f: np.ndarray, tl: float, tl_text: str, blend: tuple[float, float] | None = None,
+               hatch_color: str = "0.35") -> None:
+    """Log f axis over the grid, with the trusted 3D limit as a vertical line when it falls inside and
+    the cabinet-to-puck blend range (lo, hi) hatched when given."""
     ax.set_xscale("log")
+    if blend is not None:
+        ax.axvspan(*blend, facecolor="none", edgecolor=hatch_color, hatch="//", lw=0,
+                   label=f"cabinet-to-puck blend {blend[0]:.0f}-{blend[1]:.0f} Hz")
     if f[0] < tl < f[-1]:
         ax.axvline(tl, color="k", ls="--", lw=1.2, label=f"trusted 3D limit {tl_text}")
     ax.set_xlim(f[0], f[-1])
@@ -28,7 +33,7 @@ def _freq_axis(ax, f: np.ndarray, tl: float, tl_text: str) -> None:
 
 
 def polar_map(path: Path, f: np.ndarray, angles: np.ndarray, rel_db: np.ndarray, plane: str,
-              tl: float, tl_text: str) -> None:
+              tl: float, tl_text: str, blend: tuple[float, float] | None = None) -> None:
     """rel_db (nf, na): level re on-axis over angles -180..175; drawn -180..180."""
     order = np.argsort(angles)
     a, z = angles[order], rel_db[:, order]
@@ -39,17 +44,18 @@ def polar_map(path: Path, f: np.ndarray, angles: np.ndarray, rel_db: np.ndarray,
     cs = ax.contour(f, a, z.T, levels=MAP_CONTOURS, colors="white", linewidths=0.7)
     ax.clabel(cs, fmt="%g", fontsize=7)
     fig.colorbar(mesh, ax=ax, label="dB re on-axis")
-    _freq_axis(ax, f, tl, tl_text)
+    _freq_axis(ax, f, tl, tl_text, blend, hatch_color="white")
     ax.grid(False, which="both")
     ax.set_yticks(np.arange(-180, 181, 30))
     ax.set_ylabel(f"{plane} angle (deg)")
     ax.set_title(f"{plane} polar map, normalised to on-axis (2 m); trusted to {tl_text}")
-    if f[0] < tl < f[-1]:
-        ax.legend(loc="lower left")
+    if f[0] < tl < f[-1] or blend is not None:
+        ax.legend(loc="lower left", fontsize=8)
     _save(fig, path)
 
 
-def spinorama(path: Path, spin: Spin, f: np.ndarray, tl: float, tl_text: str) -> None:
+def spinorama(path: Path, spin: Spin, f: np.ndarray, tl: float, tl_text: str,
+              blend: tuple[float, float] | None = None) -> None:
     fig, ax = plt.subplots(figsize=(9, 5.5))
     for y, label, kw in ((spin.on_axis, "on-axis", {}), (spin.at23, "23° (listener)", {}),
                          (spin.lw, "listening window", {}), (spin.er, "early reflections", {}),
@@ -58,7 +64,7 @@ def spinorama(path: Path, spin: Spin, f: np.ndarray, tl: float, tl_text: str) ->
     top = float(np.max(spin.on_axis))
     ax.set_ylim(top - 45, top + 5)
     ax.set_ylabel("dB SPL at 2 m, 2.83 V")
-    _freq_axis(ax, f, tl, tl_text)
+    _freq_axis(ax, f, tl, tl_text, blend)
     di = ax.twinx()
     di.plot(f, spin.erdi, color="C5", ls="--", label="ERDI")
     di.plot(f, spin.spdi, color="C6", ls="--", label="SPDI")
@@ -71,7 +77,8 @@ def spinorama(path: Path, spin: Spin, f: np.ndarray, tl: float, tl_text: str) ->
     _save(fig, path)
 
 
-def window_family(path: Path, f: np.ndarray, rel: dict[int, np.ndarray], tl: float, tl_text: str) -> None:
+def window_family(path: Path, f: np.ndarray, rel: dict[int, np.ndarray], tl: float, tl_text: str,
+                  blend: tuple[float, float] | None = None) -> None:
     """rel: H angle -> 1/6-octave smoothed level minus the smoothed 23° level."""
     fig, ax = plt.subplots(figsize=(9, 5))
     ax.axhspan(-1, 1, color="C2", alpha=0.12, label="±1 dB")
@@ -79,7 +86,7 @@ def window_family(path: Path, f: np.ndarray, rel: dict[int, np.ndarray], tl: flo
     ax.axhline(0, color="k", lw=1.5, label="23° (reference)")
     for i, (a, y) in enumerate(sorted(rel.items())):
         ax.plot(f, y, color=plt.cm.plasma(i / max(len(rel) - 1, 1) * 0.85), label=f"H {a}°")
-    _freq_axis(ax, f, tl, tl_text)
+    _freq_axis(ax, f, tl, tl_text, blend)
     ax.set_ylabel("dB re 23° (1/6-oct smoothed)")
     ax.set_title("Horizontal 0-30° family normalised to the listener direction (23°)")
     ax.legend(loc="lower left", fontsize=8, ncol=3)
@@ -87,11 +94,14 @@ def window_family(path: Path, f: np.ndarray, rel: dict[int, np.ndarray], tl: flo
 
 
 def rear_rejection(path: Path, f: np.ndarray, bem: np.ndarray, lumped: np.ndarray, band: tuple[np.ndarray, np.ndarray],
-                   r_text: str, title: str) -> None:
-    """Coax-section L(0) - L(180): BEM, the BEM at vent resistance x0.7 and x1.3 (shaded), lumped."""
+                   r_text: str, title: str, far: np.ndarray | None = None) -> None:
+    """Coax-section L(0) - L(180): BEM, the BEM at vent resistance x0.7 and x1.3 (shaded), lumped, and
+    the BEM at 50 m when given (NaN where not computed)."""
     fig, ax = plt.subplots(figsize=(11, 5))
     ax.fill_between(f, *band, color="C0", alpha=0.2, label=f"3D (BEM), vent resistance {r_text}")
     ax.plot(f, bem, color="C0", lw=2, label="3D (BEM), nominal vent resistance")
+    if far is not None:
+        ax.plot(f, far, color="C0", ls=":", lw=1.5, label="3D (BEM) at 50 m (far field, reference only)")
     ax.plot(f, lumped, color="C3", ls="--", label="lumped model (free field, no cabinet)")
     ax.axhline(FB_TARGET_DB, color="grey", ls=":", label=f"{FB_TARGET_DB:g} dB hard")
     ax.axhline(FB_AIM_DB, color="grey", ls="-.", label=f"{FB_AIM_DB:g} dB aim")
