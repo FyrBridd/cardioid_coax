@@ -12,7 +12,7 @@ def test_default_layout():
     assert l.interior_d == pytest.approx(0.296)
     assert l.bass_net >= 0.050                 # >=25 L per driver
     assert l.coax_chamber_net == pytest.approx(0.010)
-    assert len(l.vent_slots) == 6
+    assert len(l.vent_slots) == 12
     assert l.warnings == ()
 
 @pytest.mark.parametrize("ear", [0.85, 1.05])
@@ -82,10 +82,10 @@ def test_baffle_must_be_two_panel_layers_in_layout():
     with pytest.raises(ValueError, match=r"baffle_t 40\.0 mm.*panel_t 18\.0 mm"):
         compute_layout(_cab(baffle_t=0.040), CX, B)
 
-def test_as_built_coax_chamber_excludes_filler():
+def test_as_built_coax_chamber_includes_fillers():
     l = compute_layout(P, CX, B)
-    assert l.coax_chamber_as_built == pytest.approx(l.coax_chamber_net + l.filler_volume)
-    assert l.coax_chamber_as_built == pytest.approx(0.01883, abs=2e-4)
+    assert l.coax_chamber_as_built == pytest.approx(l.coax_chamber_empty - l.filler_volume)
+    assert l.coax_chamber_empty == pytest.approx(0.01883, abs=2e-4)
 
 def test_ear_height_mismatch_with_seat_warns():
     p = dataclasses.replace(P, room=dataclasses.replace(P.room, seat=(3.425, 2.210, 0.980)))

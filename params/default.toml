@@ -17,12 +17,12 @@ bass_centres_z_mm = [200, 520]
 coax_chamber_net_volume_l = 10
 
 [vents]
-slots_per_side = 6
+slots_per_side = 12
 slot_w_mm = 100
 slot_h_mm = 10
 slot_pitch_mm = 22
 centre_from_front_mm = 270
-specific_resistance_rayl = 100
+specific_resistance_rayl = 190  # tuned by the model for 10 L / 24,000 mm2 (2026-10-26)
 
 [room]
 length_x_mm = 4000

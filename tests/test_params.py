@@ -8,7 +8,8 @@ def test_defaults_load_in_si():
     assert p.cabinet.depth == pytest.approx(0.350)
     assert p.cabinet.coax_centre_z == pytest.approx(0.950)
     assert p.cabinet.coax_chamber_net_volume == pytest.approx(0.010)
-    assert p.vents.slots_per_side == 6
+    assert p.vents.slots_per_side == 12
+    assert p.vents.specific_resistance == pytest.approx(190.0)
     assert p.room.seat == pytest.approx((3.425, 2.210, 0.950))
     assert p.drivers_measured is False
 
