@@ -13,14 +13,14 @@ datasheet on-axis level.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
 from speaker.bass import cone_velocity
 from speaker.bem.analytic import baffled_piston_on_axis
 from speaker.bem.run import Observation, SourceField
-from speaker.cardioid import simulate
+from speaker.cardioid import CardioidParams, simulate
 from speaker.constants import C
 from speaker.curves import interp_db, load_curve, minimum_phase, smooth
 from speaker.drivers import Driver
@@ -49,6 +49,28 @@ class Ways:
 def coax_section(ways: Ways) -> np.ndarray:
     """The coax LF way (cone plus both vents), the section the cardioid gate scores."""
     return ways.ways["coax_lf"]
+
+
+def vent_scaled_section(
+    ways: Ways, cab: SourceField, coax: Driver, cp: CardioidParams, scale: float
+) -> np.ndarray:
+    """The coax section with the vents re-strengthened for vent_resistance x scale, no new BEM run.
+
+    At and below LF_JOIN[0] the coax LF strengths are lumped: the cone keeps its nominal
+    strength (from cp) and the vents get the lumped u_vent/u_cone ratio at the scaled
+    resistance, on the same cabinet vent fields. Above LF_JOIN[0] the section is unchanged.
+    """
+    f = ways.f
+    m = f <= LF_JOIN[0]
+    out = coax_section(ways).copy()
+    if scale == 1.0 or not m.any():
+        return out
+    nom = simulate(coax, cp, f[m], V_DRIVE)
+    alt = simulate(coax, replace(cp, vent_resistance=cp.vent_resistance * scale), f[m], V_DRIVE)
+    d_vent = (alt.u_vent / alt.u_cone - nom.u_vent / nom.u_cone) * np.sqrt(2) * nom.u_cone / 2
+    vents = _field(cab, "vent_left", f[m]) + _field(cab, "vent_right", f[m])
+    out[m] += d_vent[:, None] * vents
+    return out
 
 
 def _lerp_log(fs: np.ndarray, y: np.ndarray, ft: np.ndarray) -> np.ndarray:

@@ -94,3 +94,26 @@ def test_bem_vent_sign_and_cabinet_shadowing(tmp_path):
     assert abs(cone[0, front]) > abs(cone[0, back])
     for v in (vl, vr):
         assert abs(v[0, back]) > abs(v[0, front])
+
+
+def test_vent_scaled_section_keeps_the_cone_and_rescales_the_vents():
+    import dataclasses
+    from speaker.system import vent_scaled_section
+    fld = _piston_field(F)
+    o = fld.obs
+    for k, n in ((2, "vent_left"), (3, "vent_right")):  # direction-dependent vent fields
+        fld.p[:, k, :] = fld.p[:, 0, :] * (0.5 + o.dirs[:, 1] * (0.3 if k == 2 else -0.2))[None, :]
+    cp = cardioid_params(P, L, CX)
+    w = way_responses(P, CX, B, L, fld, fld, F, trusted_limit=3000.0)
+    assert np.array_equal(vent_scaled_section(w, fld, CX, cp, 1.0), coax_section(w))
+    s = 1.3
+    got = vent_scaled_section(w, fld, CX, cp, s)
+    # Oracle: a full way_responses at R x s, with its cone strength swapped back to the nominal one.
+    p_alt = dataclasses.replace(P, vents=dataclasses.replace(P.vents, specific_resistance=P.vents.specific_resistance * s))
+    w_alt = way_responses(p_alt, CX, B, L, fld, fld, F, trusted_limit=3000.0)
+    m = F <= LF_JOIN[0]
+    u_nom = simulate(CX, cp, F[m], 2.83).u_cone
+    u_alt = simulate(CX, dataclasses.replace(cp, vent_resistance=cp.vent_resistance * s), F[m], 2.83).u_cone
+    assert np.allclose(got[m], coax_section(w_alt)[m] * (u_nom / u_alt)[:, None], rtol=1e-9)
+    assert not np.allclose(got[m], coax_section(w)[m])
+    assert np.array_equal(got[~m], coax_section(w)[~m])

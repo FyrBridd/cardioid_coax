@@ -56,3 +56,15 @@ def test_each_way_gets_its_filter():
     fm = f[(f > 400) & (f < 700)]  # all three ways contribute, each through its own filter
     ref = lr4(fm, 170, "low") + lr4(fm, 170, "high") * lr4(fm, 1400, "low") + lr4(fm, 1400, "high")
     assert np.allclose(t[(f > 400) & (f < 700)], ref, atol=1e-12)
+
+
+def test_fallback_gain_only_for_a_way_with_no_points_in_its_band():
+    o = observation_set(2.0)
+    f = np.geomspace(50, 1000, 30)  # nothing in the coax_hf 2-8 kHz matching band
+    w = Ways(f, o, {k: np.ones((len(f), len(o.dirs)), complex) for k in ("bass", "coax_lf", "coax_hf")}, {})
+    w.ways["bass"] *= 2.0
+    with pytest.raises(ValueError, match="no frequencies"):
+        apply_crossover(w, FixedCrossover())
+    _, gains = apply_crossover(w, FixedCrossover(), fallback_db={"coax_hf": -7.0, "bass": 3.0})
+    assert gains["coax_hf"] == -7.0
+    assert gains["bass"] == pytest.approx(-6.02, abs=0.01)  # its band has points: matched, fallback unused
