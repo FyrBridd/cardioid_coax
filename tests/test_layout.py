@@ -1,7 +1,7 @@
 import dataclasses, pytest
 from speaker.params import load_params
 from speaker.drivers import load_driver
-from speaker.layout import compute_layout
+from speaker.layout import cardioid_params, compute_layout
 
 P = load_params(); CX = load_driver("bms_10c262"); B = load_driver("dayton_rss265ho_44")
 
@@ -15,7 +15,7 @@ def test_default_layout():
     assert len(l.vent_slots) == 12
     assert l.warnings == ()
 
-@pytest.mark.parametrize("ear", [0.85, 1.05])
+@pytest.mark.parametrize("ear", [0.92, 1.05])  # below ~0.90 m the bass falls under 50 L
 def test_ear_height_moves_everything_consistently(ear):
     p = dataclasses.replace(P, cabinet=dataclasses.replace(P.cabinet, coax_centre_z=ear))
     l = compute_layout(p, CX, B)
@@ -38,12 +38,11 @@ def test_overlapping_bass_rejected():
     with pytest.raises(ValueError, match="overlap"):
         compute_layout(p, CX, B)
 
-def test_low_ear_height_warns_on_bass_volume():
+def test_low_ear_height_rejected_on_bass_volume():   # 50 L is a rule now, not a warning
     p = dataclasses.replace(P, cabinet=dataclasses.replace(P.cabinet, coax_centre_z=0.85),
                             room=dataclasses.replace(P.room, seat=(3.425, 2.210, 0.85)))
-    l = compute_layout(p, CX, B)
-    assert l.bass_net < 0.050
-    assert len(l.warnings) == 1 and "bass" in l.warnings[0]
+    with pytest.raises(ValueError, match=r"bass net volume 45\.7 L is below the 50 L target"):
+        compute_layout(p, CX, B)
 
 def test_bass_net_under_30l_rejected():
     fat = dataclasses.replace(B, basket_d=0.284, depth=0.300, flange_t=0.010)
@@ -78,10 +77,6 @@ def test_negative_top_margin_rejected():
     with pytest.raises(ValueError, match=r"top_margin -50\.0 mm.*coax frame top at 1080\.0 mm"):
         compute_layout(_cab(top_margin=-0.050), CX, B)
 
-def test_baffle_must_be_two_panel_layers_in_layout():
-    with pytest.raises(ValueError, match=r"baffle_t 40\.0 mm.*panel_t 18\.0 mm"):
-        compute_layout(_cab(baffle_t=0.040), CX, B)
-
 def test_as_built_coax_chamber_includes_fillers():
     l = compute_layout(P, CX, B)
     assert l.coax_chamber_as_built == pytest.approx(l.coax_chamber_empty - l.filler_volume)
@@ -93,3 +88,22 @@ def test_ear_height_mismatch_with_seat_warns():
     assert any("ear height" in w and "950.0 mm" in w and "980.0 mm" in w for w in l.warnings)
     p = dataclasses.replace(P, room=dataclasses.replace(P.room, seat=(3.425, 2.210, 0.965)))
     assert compute_layout(p, CX, B).warnings == ()
+
+def test_default_layout_unchanged():
+    # Captured before the front-shape parameters were added (2026-10-27).
+    l = compute_layout(P, CX, B)
+    assert P.cabinet.baffle_t == pytest.approx(0.036)
+    assert l.height == pytest.approx(1.118, abs=1e-6)
+    assert l.bass_net == pytest.approx(0.05409, abs=1e-5)
+    assert l.coax_chamber_empty == pytest.approx(0.01883, abs=1e-5)
+    assert l.coax_centre == pytest.approx((0.160, 0.950))
+    vp = cardioid_params(P, l, CX).vent_positions
+    assert [v for pos in vp for v in pos] == pytest.approx([-0.234, 0.16, 0.005, -0.234, -0.16, 0.005])
+
+def test_coax_offset_moves_the_centre():
+    l = compute_layout(_cab(coax_offset_x=0.005), CX, B)
+    assert l.coax_centre == pytest.approx((0.165, 0.950))
+    assert [v for c in l.bass_centres for v in c] == pytest.approx([0.160, 0.200, 0.160, 0.520])
+    # The vents are on the side faces, at x = width and x = 0: width - cx and -cx from the coax centre.
+    (_, y1, _), (_, y2, _) = cardioid_params(_cab(coax_offset_x=0.005), l, CX).vent_positions
+    assert (y1, y2) == pytest.approx((0.155, -0.165))

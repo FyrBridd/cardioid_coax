@@ -95,10 +95,30 @@ def in_room_bass(p: Params, layout, bass, vb: float, f: np.ndarray, surfaces=ALL
     return 20 * np.log10(np.abs(tot))
 
 
+def _refuse_bem_only_geometry(p: Params) -> None:
+    """The CAD builds a square front, a centred coax, a panel_t outer baffle and the ellipse flare."""
+    c = p.cabinet
+    off = []
+    if c.front_edge != "square":
+        off.append(f"front_edge {c.front_edge!r} (CAD: 'square')")
+    if c.coax_offset_x != 0:
+        off.append(f"coax_offset_x {c.coax_offset_x * 1000:.1f} mm (CAD: 0)")
+    if abs(c.outer_baffle_t - c.panel_t) > 1e-9:
+        off.append(f"outer_baffle_t {c.outer_baffle_t * 1000:.1f} mm (CAD: panel_t {c.panel_t * 1000:.1f} mm)")
+    if c.flare_profile != "ellipse":
+        off.append(f"flare_profile {c.flare_profile!r} (CAD: 'ellipse')")
+    if off:
+        raise ValueError(
+            f"{', '.join(off)}: the CAD does not model these yet; "
+            "`speaker directivity` and `speaker round` accept them"
+        )
+
+
 def build(params_path: Path | None, out_dir: Path) -> Path:
     p = load_params(params_path)
     coax, bass = load_driver(p.coax), load_driver(p.bass)
     layout = compute_layout(p, coax, bass)
+    _refuse_bem_only_geometry(p)
     out_dir = Path(out_dir)
     plots = out_dir / "plots"
     plots.mkdir(parents=True, exist_ok=True)

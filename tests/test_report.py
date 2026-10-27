@@ -1,4 +1,5 @@
 import math
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -7,7 +8,7 @@ from speaker.bass import sealed_spl
 from speaker.drivers import load_driver
 from speaker.layout import compute_layout
 from speaker.params import load_params
-from speaker.report import cardioid_warnings, fb_crossing, in_room_bass
+from speaker.report import build, cardioid_warnings, fb_crossing, in_room_bass
 
 P = load_params(); CX = load_driver("bms_10c262"); B = load_driver("dayton_rss265ho_44")
 L = compute_layout(P, CX, B)
@@ -59,3 +60,23 @@ def test_cardioid_warnings():
     w = cardioid_warnings(9.4, 5.2)
     assert len(w) == 2 and "9.4 dB" in w[0] and "10 dB hard requirement" in w[0]
     assert "5.2 dB" in w[1] and "6 dB aim" in w[1]
+
+
+@pytest.mark.parametrize("old, new, name", [
+    ('front_edge = "square"', 'front_edge = "roundover"', "front_edge 'roundover'"),
+    ("coax_offset_x_mm = 0", "coax_offset_x_mm = 3", "coax_offset_x 3.0 mm"),
+    ("outer_baffle_t_mm = 18", "outer_baffle_t_mm = 24", "outer_baffle_t 24.0 mm"),
+    ('flare_profile = "ellipse"', 'flare_profile = "cone"', "flare_profile 'cone'"),
+])
+def test_build_refuses_bem_only_geometry(tmp_path, old, new, name):
+    text = Path("params/default.toml").read_text()
+    assert old in text
+    text = text.replace(old, new)
+    if "roundover" in new:
+        text = text.replace("edge_size_mm = 0", "edge_size_mm = 5")
+    pf = tmp_path / "p.toml"; pf.write_text(text)
+    out = tmp_path / "out"
+    with pytest.raises(ValueError, match="the CAD does not model these yet") as e:
+        build(pf, out)
+    assert name in str(e.value) and "`speaker directivity` and `speaker round` accept them" in str(e.value)
+    assert not out.exists()

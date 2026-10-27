@@ -1,6 +1,7 @@
 """Parameter loading. The only place millimetres/litres are converted to SI."""
 from __future__ import annotations
 
+import math
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,14 +16,22 @@ class Cabinet:
     width: float
     depth: float
     panel_t: float
-    baffle_t: float
+    baffle_t: float  # outer_baffle_t + panel_t: the outer layer plus one inner panel_t layer
     coax_centre_z: float
     top_margin: float
     divider_t: float
-    side_edge_radius: float
     flare_mouth_d: float
     bass_centres_z: tuple[float, float]
     coax_chamber_net_volume: float
+    outer_baffle_t: float
+    front_edge: str  # one of front_shape.FAMILIES
+    edge_size: float  # roundover radius or 45° chamfer leg; 0 for square and facets
+    facet_angle: float  # rad, back from the front plane
+    facet_width: float  # each facet, from the side edge inwards
+    facet_base_z: float  # where the facets start; the bass section below stays flat
+    facet_ramp: float  # 0 = a horizontal step at the base; > 0 = a planar ramp this tall
+    coax_offset_x: float  # + towards +x, the listener's side; mirrored on the other cabinet
+    flare_profile: str  # "ellipse" or "cone"
 
 
 @dataclass(frozen=True)
@@ -81,24 +90,27 @@ def load_params(path: Path | None = None) -> Params:
         width=_mm(c["width_mm"]),
         depth=_mm(c["depth_mm"]),
         panel_t=_mm(c["panel_t_mm"]),
-        baffle_t=_mm(c["baffle_t_mm"]),
+        baffle_t=_mm(c["outer_baffle_t_mm"] + c["panel_t_mm"]),
         coax_centre_z=_mm(c["coax_centre_z_mm"]),
         top_margin=_mm(c["top_margin_mm"]),
         divider_t=_mm(c["divider_t_mm"]),
-        side_edge_radius=_mm(c["side_edge_radius_mm"]),
         flare_mouth_d=_mm(c["flare_mouth_d_mm"]),
         bass_centres_z=_mm_seq(c["bass_centres_z_mm"]),
         coax_chamber_net_volume=c["coax_chamber_net_volume_l"] / 1000.0,
+        outer_baffle_t=_mm(c["outer_baffle_t_mm"]),
+        front_edge=str(c["front_edge"]),
+        edge_size=_mm(c["edge_size_mm"]),
+        facet_angle=math.radians(c["facet_angle_deg"]),
+        facet_width=_mm(c["facet_width_mm"]),
+        facet_base_z=_mm(c["facet_base_z_mm"]),
+        facet_ramp=_mm(c["facet_ramp_mm"]),
+        coax_offset_x=_mm(c["coax_offset_x_mm"]),
+        flare_profile=str(c["flare_profile"]),
     )
     if cabinet.depth > MAX_DEPTH + 1e-9:
         raise ValueError(
             f"cabinet depth {cabinet.depth * 1000:.0f} mm exceeds the "
             f"{MAX_DEPTH * 1000:.0f} mm limit"
-        )
-    if cabinet.side_edge_radius != 0:
-        raise ValueError(
-            "side_edge_radius is not implemented yet: the CAD builds square side edges, "
-            f"set side_edge_radius_mm = 0 (got {cabinet.side_edge_radius * 1000:g} mm)"
         )
     vents = Vents(
         slots_per_side=int(v["slots_per_side"]),

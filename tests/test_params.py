@@ -1,3 +1,4 @@
+import math
 from pathlib import Path
 import pytest
 from speaker.params import load_params
@@ -19,8 +20,15 @@ def test_depth_over_350_rejected(tmp_path):
     with pytest.raises(ValueError, match="depth"):
         load_params(f)
 
-def test_side_edge_radius_not_implemented(tmp_path):
-    text = Path("params/default.toml").read_text().replace("side_edge_radius_mm = 0", "side_edge_radius_mm = 6")
+def test_facet_angle_converted_to_radians(tmp_path):
+    text = Path("params/default.toml").read_text().replace("facet_angle_deg = 0", "facet_angle_deg = 20")
     f = tmp_path / "p.toml"; f.write_text(text)
-    with pytest.raises(ValueError, match="side_edge_radius is not implemented yet"):
-        load_params(f)
+    c = load_params(f).cabinet
+    assert c.facet_angle == pytest.approx(math.radians(20))
+
+def test_front_shape_defaults():
+    c = load_params().cabinet
+    assert c.outer_baffle_t == pytest.approx(0.018) and c.baffle_t == pytest.approx(0.036)
+    assert c.front_edge == "square" and c.flare_profile == "ellipse"
+    assert (c.edge_size, c.facet_angle, c.facet_width, c.facet_base_z, c.facet_ramp, c.coax_offset_x) == (0,) * 6
+    assert not hasattr(c, "side_edge_radius")
