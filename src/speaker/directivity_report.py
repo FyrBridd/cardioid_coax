@@ -38,8 +38,8 @@ from .params import DEFAULT_PATH, Params, load_params
 from .report import FB_AIM_BAND, FB_BAND
 from .scores import LW_RING, REAR_H, ROLL_ANGLES, Score, score_all
 from .spinorama import P_REF_PEAK, Spin, spinorama
-from .system import (COAX_CURVES, PUCK_HOLD_F, V_DRIVE, Ways, coax_section, vent_scaled_section,
-                     way_responses)
+from .system import (BLEND_MIN_OCT, COAX_CURVES, PUCK_HOLD_F, V_DRIVE, Ways, coax_section,
+                     vent_scaled_section, way_responses)
 
 CACHE_DIR = Path("out/cache/bem")
 CAB_H_MAX = 0.05  # m, cabinet mesh size cap of the full run and the mesh check
@@ -284,18 +284,25 @@ def _usable_mesh_check(mc: dict | None, d: _Design, *, h_max: float, per_wavelen
 def _trusted_limit(mc: dict | None, *, cab_top: float, f_top: float, puck_lo: float | None) -> tuple[float, str]:
     """The trusted limit and its header text, from the mesh check or UNVERIFIED_LIMIT.
 
-    When the grid goes past the cabinet field (cab_top), a limit above it is capped there. A limit
-    below what the run needs (2 x the puck's lowest frequency puck_lo for the cabinet-to-puck blend,
-    or the top of a puck-less grid) raises ValueError.
+    With the puck (puck_lo, its lowest frequency, given), the cabinet-to-puck blend runs above the
+    limit, so a limit less than BLEND_MIN_OCT below the top of the cabinet field (cab_top) is capped
+    there. Without it, a grid past the cabinet field caps the limit at cab_top. A limit below what
+    the run needs (puck_lo, where the blend starts, or the top of a puck-less grid) raises ValueError.
     """
     tl = float(mc["trusted_limit_hz"]) if mc else UNVERIFIED_LIMIT
     note = "" if mc else " (unverified)"
-    if f_top > cab_top and tl > cab_top:
+    if puck_lo is not None:
+        cap = cab_top / 2 ** BLEND_MIN_OCT
+        if tl > cap:
+            note += (f" (from {tl:.0f} Hz, capped {BLEND_MIN_OCT:.2f} octave below the top of the "
+                     "cabinet field to leave room for the cabinet-to-puck blend)")
+            tl = cap
+    elif f_top > cab_top and tl > cab_top:
         note += f" (from {tl:.0f} Hz, capped at the top of the cabinet field)"
         tl = cab_top
-    need = 2 * puck_lo if puck_lo is not None else f_top
+    need = puck_lo if puck_lo is not None else f_top
     if tl < need:
-        why = ("the cabinet-to-puck blend starts at half of it" if puck_lo is not None
+        why = ("the cabinet-to-puck blend starts at it" if puck_lo is not None
                else "a run without the puck stops at it")
         raise ValueError(f"trusted 3D limit {tl:.0f} Hz is below {need:.0f} Hz, which this run needs ({why})")
     return tl, f"{tl:.0f} Hz{note}"
@@ -458,10 +465,14 @@ def _html(d: _Design, *, fast, mc, mc_why, tl_text, scores, gains, xo, ways, ven
     ]
     if ways.meta["puck_blend"] is not None:
         lo, hi = ways.meta["puck_blend"]
-        notes.append(f"<b>Cabinet-to-puck blend</b>: from {lo:.0f} Hz to {hi:.0f} Hz, inside the trusted range, the "
+        checked = float(mc["trusted_limit_hz"]) if mc else 0.0
+        verified = ("The mesh check verified the cabinet fields across the blend" if checked >= hi else
+                    f"The cabinet fields in the blend above {max(checked, lo):.0f} Hz are not mesh-checked")
+        notes.append(f"<b>Cabinet-to-puck blend</b>: from {lo:.0f} Hz to {hi:.0f} Hz, above the trusted limit, the "
                      "coax LF and HF fields cross-fade from the cabinet BEM to the puck BEM (the coax on a round "
-                     "cylinder, with no cabinet facets or edges), log-linear in frequency; above it the puck "
-                     "alone. The range is hatched on the polar maps, spinorama and window family. Each score's "
+                     "cylinder, with no cabinet facets or edges), log-linear in frequency, and the vents fade "
+                     f"out; above it the puck alone. The trusted range is the cabinet BEM alone. {verified}. "
+                     "The range is hatched on the polar maps, spinorama and window family. Each score's "
                      "detail in scores.json gives puck_fraction (the share of its band's grid points with any "
                      "puck weight) and puck_mean_weight.")
     far = [s for s in scores if s.key == "cardioid_hard_far"]
