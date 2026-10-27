@@ -6,8 +6,12 @@ rest are ordered ascending on
     (floor((window_spread + presence_lift) / 0.25), di_smooth_bass + di_smooth_lfhf, flat23)
 
 If every ok variant other than round0 (a reference, not a candidate) fails the gate, gate_unmet is
-set and all ok variants, round0 included, are ranked by cardioid_hard (descending) and then by that
-key, so the round still has an order and a best to carry on.
+set and all ok variants, round0 included, are still ranked, so the round has an order and a best to
+carry on. The best candidate's cardioid_hard (round0 excluded) sets the bar: every row whose
+cardioid_hard is no more than GATE_UNMET_TOL_DB below it counts as at the gate, and those rows come
+first, ordered by that key alone. The other rows follow, by cardioid_hard (descending) and then by
+the key. Ranking on raw cardioid_hard alone would let tenths of a dB of rear rejection decide the
+shape stage, with directivity only breaking exact float ties.
 """
 from __future__ import annotations
 
@@ -18,6 +22,7 @@ from typing import Literal
 DIRECTIVITY_KEYS = ("cardioid_hard", "window_spread", "presence_lift", "di_smooth_bass", "di_smooth_lfhf", "flat23")
 BUCKET_DB = 0.25
 REFERENCE = "round0"  # ranked for comparison, but never a stage's best
+GATE_UNMET_TOL_DB = 0.5  # gate unmet: rows this close to the best candidate's cardioid_hard rank on directivity
 
 
 @dataclass
@@ -107,8 +112,11 @@ def rank(results: list[VariantResult], rank_by: str) -> Ranking:
     # and the resulting rule then applies to every row, round0 included.
     candidates = [x for x in rows if x[0] != REFERENCE]
     if candidates and not any(passes for _, _, passes in candidates):
-        rows.sort(key=lambda x: (-x[1]["cardioid_hard"], *_directivity_key(x[1])))
-        return Ranking([n for n, _, _ in rows], out, True)
+        bar = max(v["cardioid_hard"] for _, v, _ in candidates) - GATE_UNMET_TOL_DB
+        near = sorted((x for x in rows if x[1]["cardioid_hard"] >= bar), key=lambda x: _directivity_key(x[1]))
+        rest = sorted((x for x in rows if x[1]["cardioid_hard"] < bar),
+                      key=lambda x: (-x[1]["cardioid_hard"], *_directivity_key(x[1])))
+        return Ranking([n for n, _, _ in near + rest], out, True)
     for name, v, passes in rows:
         if not passes:
             out[name] = f"fails the hard cardioid gate ({v['cardioid_hard']:.1f} dB)"

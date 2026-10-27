@@ -287,7 +287,8 @@ def test_rank_round0_alone_passing_does_not_block(tmp_path, fake_eval):
     run_round(spec(tmp_path), out)
     ranking = json.loads((out / "shape" / "ranking.json").read_text())
     assert ranking["gate_unmet"] and ranking["out"] == {}
-    assert ranking["order"] == ["round0", "m270", "m280", "stage-base"]  # all at 8 dB: then by the key
+    # the candidates are all at 8 dB and round0 at 12 dB is above them, so all are at the gate: by the key alone
+    assert ranking["order"] == ["m270", "m280", "stage-base", "round0"]
     assert [f["name"] for f in json.loads((out / "finals.json").read_text())] == ["m270", "m280"]
 
 

@@ -15,16 +15,17 @@ import shutil
 from pathlib import Path
 
 from .crossover import FixedCrossover
-from .directivity_report import _CSS, COARSE, VENT_SPREAD, _row
+from .directivity_report import _CSS, COARSE, FINE, VENT_SPREAD, _row
 from .evaluate import SETTINGS, grid
 from .params import Params, load_params
-from .ranking import DIRECTIVITY_KEYS, REFERENCE
+from .ranking import DIRECTIVITY_KEYS, GATE_UNMET_TOL_DB, REFERENCE
 from .shape_drawing import draw_designs
 from .variants import RoundSpec
 
 e = html.escape
 PLACEHOLDER = "Draft: the recommendation is written in the next session."
 NEXT_PLACEHOLDER = "Draft: what to try next is written in the next session."
+COMPARE_NOTE = "(scored with earlier code; not like-for-like)"
 CARDIOID_KEYS = ("cardioid_hard", "cardioid_aim", "rear_hemisphere")  # a cardioid stage's grid stops at 600 Hz
 CURVES = (
     ("polar_h", "Horizontal polar map: level re on-axis at 2 m. The dashed line is the trusted 3D limit."),
@@ -151,6 +152,17 @@ class _Round:
             sc = r["scores"] or None
         return sc
 
+    def round0_rescored(self) -> tuple[str, list[dict]] | None:
+        """(label, scores) of round 0 as the last stage ran it with this code, when that result is ok."""
+        if not self.last:
+            return None
+        r = (_read_json(self.out_dir / self.last["name"] / REFERENCE / "result.json")
+             or self.result(self.last, REFERENCE))
+        if not isinstance(r, dict) or r.get("status") != "ok" or not r.get("scores"):
+            return None
+        return (f"Round 0 rescored (this code, {r.get('settings', self.last['settings'])} settings, "
+                f"{'tuned' if r.get('tuned') else 'untuned'})", r["scores"])
+
     def round0_params(self) -> Path:
         if self.last:
             p = self.out_dir / self.last["name"] / REFERENCE / "params_tuned.toml"
@@ -240,15 +252,18 @@ def _scores(rd: _Round) -> str:
     gated = [s["name"] for s in rd.stages if s["ranking"].get("gate_unmet")]
     if gated:
         parts.append(f"<p class='banner'>The hard cardioid gate is unmet by every variant (stage "
-                     f"{e(', '.join(gated))}). The variants are ranked by cardioid_hard first.</p>")
+                     f"{e(', '.join(gated))}). They are ranked on directivity among the variants within "
+                     f"{GATE_UNMET_TOL_DB:g} dB of the best rear rejection, then by rear rejection.</p>")
     rows: list[tuple[str, list[dict] | None]] = []
     rec = rd.recommendation()
     done = [f for f in rd.finals if f.get("status") == "ok"]
     for f in done:
         tag = "recommendation" if rec and f["name"] == rec[0] else f"runner-up {f['rank']}"
         rows.append((f"{f['rank']}. {f['name']} ({tag})", rd.final_scores(f["name"])))
+    if r0 := rd.round0_rescored():
+        rows.append(r0)
     for c in rd.spec.compare:
-        rows.append((c.label, _read_json(Path(c.scores))))
+        rows.append((f"{c.label} {COMPARE_NOTE}", _read_json(Path(c.scores))))
     for f in rd.finals:
         if f.get("status") != "ok":
             last = [x for x in str(f.get("reason", "")).splitlines() if x.strip()]
@@ -280,7 +295,12 @@ def _confidence(rd: _Round) -> str:
         f"<b>Screen against finals</b>: the stages that rank by directivity ran with the screen settings, "
         f"{scr.per_wavelength:g} elements per wavelength up to the trusted limit. The screen grid stops one "
         f"1/{scr.ppo}-octave step below the trusted limit, at {top:.0f} Hz against {spec.trusted_limit:.0f} Hz. "
-        f"The finals were rerun at {COARSE:g} elements per wavelength, with the coax puck.",
+        f"The finals were rerun at {COARSE:g} elements per wavelength, with the coax puck. The mesh check that "
+        f"set the trusted limit compared {COARSE:g} against {FINE:g} elements per wavelength, so the screen's "
+        f"{scr.per_wavelength:g} per wavelength is not covered by it. Screen rankings in the "
+        f"1–{spec.trusted_limit / 1000:.2f} kHz bands, presence lift especially, are therefore less certain than "
+        f"the finals' scores. The recommendation should be argued from the finals' {COARSE:g}-per-wavelength "
+        "scores.",
         "<b>Flare mesh</b>: the mesh understates the ellipse-against-cone flare difference by about 3-7 % at "
         "h_coax 10 mm.",
         "<b>Coax LF de-embedding</b>: above the LF join the coax's low-frequency volume velocity is the datasheet "

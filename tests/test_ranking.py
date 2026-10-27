@@ -39,6 +39,14 @@ def test_rank_when_every_variant_fails_the_gate():
     assert r.out == {}
 
 
+def test_gate_unmet_ranks_near_ties_on_directivity():
+    # 7.7 and 7.8 dB are within GATE_UNMET_TOL_DB of the best (7.8): directivity decides between them.
+    # 7.0 dB is not, so it follows, whatever its directivity.
+    rows = [res("b", hard=7.8, ws=2, pl=2), res("a", hard=7.7, ws=1, pl=1), res("c", hard=7.0, ws=0, pl=0)]
+    r = rank(rows, "directivity")
+    assert r.gate_unmet and r.order == ["a", "b", "c"] and r.out == {}
+
+
 def test_rank_gate_unmet_ties_on_hard_go_to_the_key():
     r = rank([res("a", hard=6.0, ws=2, pl=2), res("b", hard=6.0, ws=1, pl=1)], "directivity")
     assert r.gate_unmet and r.order == ["b", "a"]

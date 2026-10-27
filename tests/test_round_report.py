@@ -7,6 +7,7 @@ import pytest
 
 import speaker.round as round_mod
 from speaker.cli import main
+from speaker.evaluate import SETTINGS
 from speaker.round_report import write_report
 from speaker.variants import Compare, RoundSpec, StageSpec, VariantSpec, apply_overrides, read_raw, write_params
 
@@ -174,6 +175,8 @@ def test_gate_unmet_banner(tmp_path):
     build(bad, gate_unmet=True)
     banner = "hard cardioid gate is unmet by every variant"
     assert banner not in html_of(ok) and banner in html_of(bad)
+    assert ("ranked on directivity among the variants within 0.5 dB of the best rear rejection, then by "
+            "rear rejection") in html_of(bad)
 
 
 def test_curves_are_copied_and_shown(round_dir):
@@ -191,6 +194,38 @@ def test_score_table_rows_and_greyed_low_table(tmp_path):
     assert 'num fail">9.00' in html and 'num warn">0.20' in html and 'num pass">12.00' in html
     grey = html[html.index('<table class="grey">'):]
     assert "3.30" in grey and "3.30" not in html[:html.index('<table class="grey">')]  # low scores only in the grey table
+
+
+def test_score_table_has_round0_rescored_and_flags_compare_entries(tmp_path):
+    out = tmp_path / "r"
+    spec = build(out, compare=tmp_path / "prev.json")
+    html = html_of(out, spec)
+    rescored = "Round 0 rescored (this code, screen settings, untuned)"
+    compare = "Round 0 final (scored with earlier code; not like-for-like)"
+    table = html[html.index(">Scores<"):html.index('<table class="grey">')]
+    assert table.index("runner-up 2") < table.index(rescored) < table.index(compare)
+
+
+def test_score_table_omits_round0_rescored_when_not_ok(tmp_path):
+    out = tmp_path / "r"
+    build(out)
+    r0 = out / "shape" / "round0" / "result.json"
+    put(r0, {**json.loads(r0.read_text()), "status": "error", "scores": []})
+    data = json.loads((out / "results.json").read_text())
+    for r in data["stages"][-1]["results"]:
+        if r["name"] == "round0":
+            r.update(status="error", scores=[])
+    put(out / "results.json", data)
+    assert "Round 0 rescored" not in html_of(out)
+
+
+def test_confidence_says_the_screen_density_is_outside_the_mesh_check(round_dir):
+    html = html_of(round_dir)
+    pw = SETTINGS["screen"].per_wavelength
+    assert (f"The mesh check that set the trusted limit compared 6 against 8 elements per wavelength, so the "
+            f"screen's {pw:g} per wavelength is not covered by it.") in html
+    assert "presence lift especially, are therefore less certain than the finals' scores" in html
+    assert "The recommendation should be argued from the finals' 6-per-wavelength scores." in html
 
 
 def test_confidence_states_the_known_limits(round_dir):
