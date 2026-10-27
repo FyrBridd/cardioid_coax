@@ -1,4 +1,4 @@
-"""Command line entry point: ``speaker build``."""
+"""Command line entry point: ``speaker build`` and ``speaker directivity``."""
 from __future__ import annotations
 
 import argparse
@@ -14,13 +14,27 @@ def main(argv: list[str] | None = None) -> int:
     b = sub.add_parser("build", help="compute, plot, export and summarise the design")
     b.add_argument("--params", type=Path, default=None, help="parameter TOML (default: params/default.toml)")
     b.add_argument("--out", type=Path, default=Path("out"), help="output directory (default: out/)")
+    d = sub.add_parser("directivity", help="3D directivity simulation, scores and HTML report")
+    d.add_argument("--params", type=Path, default=None, help="parameter TOML (default: params/default.toml)")
+    d.add_argument("--out", type=Path, default=Path("out/directivity"),
+                   help="output directory (default: out/directivity/)")
+    d.add_argument("--fast", action="store_true", help="coarse mesh, 50 Hz-1 kHz, no puck (minutes, not hours)")
+    d.add_argument("--mesh-check", action="store_true",
+                   help="only run the mesh-convergence check, writing mesh_check.json (hours)")
     args = parser.parse_args(argv)
     try:
-        summary = build(args.params, args.out)
+        if args.command == "build":
+            out = build(args.params, args.out)
+        elif args.mesh_check:
+            from .directivity_report import mesh_check
+            out = mesh_check(args.params, args.out)
+        else:
+            from .directivity_report import run_directivity
+            out = run_directivity(args.params, args.out, fast=args.fast)
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
-    print(f"wrote {summary}")
+    print(f"wrote {out}")
     return 0
 
 

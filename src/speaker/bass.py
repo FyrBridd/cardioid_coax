@@ -41,7 +41,10 @@ def sealed_alignment(d: Driver, vb: float, series_r: float = 0.0) -> Alignment:
     return Alignment(fc=fc, qtc=qtc, f3=x3 * fc)
 
 
-def _velocity(d: Driver, vb: float, f: np.ndarray, v_rms: float, series_r: float) -> tuple[np.ndarray, np.ndarray]:
+def cone_velocity(
+    d: Driver, vb: float, f: np.ndarray, v_rms: float, series_r: float = 0.0
+) -> tuple[np.ndarray, np.ndarray]:
+    """(ω, RMS cone velocity in m/s, e^{+jωt}) of one driver in a sealed box vb at v_rms."""
     w = 2 * np.pi * f
     cab = vb / (RHO * C**2)
     zm = 1j * w * d.mms + d.rms + 1.0 / (1j * w * d.cms) + d.sd**2 / (1j * w * cab)
@@ -52,14 +55,14 @@ def _velocity(d: Driver, vb: float, f: np.ndarray, v_rms: float, series_r: float
 
 def sealed_spl(d, vb, f, v_rms, r=1.0, n_drivers=1, series_r=0.0) -> np.ndarray:
     f = _check_f(f)
-    w, u = _velocity(d, vb, f, v_rms, series_r)
+    w, u = cone_velocity(d, vb, f, v_rms, series_r)
     p = n_drivers * RHO * w * d.sd * np.abs(u) / (2 * np.pi * r)
     return 20 * np.log10(p / P_REF)
 
 
 def sealed_excursion(d, vb, f, v_rms, series_r=0.0) -> np.ndarray:
     f = _check_f(f)
-    w, u = _velocity(d, vb, f, v_rms, series_r)
+    w, u = cone_velocity(d, vb, f, v_rms, series_r)
     return math.sqrt(2) * np.abs(u) / w
 
 

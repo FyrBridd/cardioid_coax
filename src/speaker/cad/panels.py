@@ -24,6 +24,7 @@ from typing import Literal
 
 import cadquery as cq
 
+from ..coax_geometry import flare_radii
 from ..drivers import Driver
 from ..layout import Layout
 from ..params import Params
@@ -33,8 +34,6 @@ BOLT_HOLE_D = 6.0  # mm
 POCKET_CLEARANCE = 2.0  # mm added to driver outer_d for the flange pocket
 VENT_CORNER_R = 3.0  # mm, tool radius for vent slots
 TERMINAL_W, TERMINAL_H, TERMINAL_CORNER_R = 100.0, 160.0, 3.0  # mm
-FLARE_FIT_CLEARANCE = 0.2  # mm on diameter, push fit
-FLARE_LIP = 3.0  # mm radial wall at the insert's front face
 COAX_BOLTS, BASS_BOLTS = 8, 6
 
 
@@ -179,9 +178,7 @@ def flare_insert(l: Layout, p: Params, coax: Driver) -> cq.Workplane:
     and to the front face at the mouth, ending FLARE_LIP inside the outer wall.
     """
     length = _mm(p.cabinet.panel_t)
-    r_out = (_mm(p.cabinet.flare_mouth_d) - FLARE_FIT_CLEARANCE) / 2
-    r_throat = _mm(coax.cutout_d) / 2
-    r_mouth = r_out - FLARE_LIP
+    r_throat, r_mouth, r_out = (_mm(r) for r in flare_radii(p, coax))
     if r_mouth <= r_throat:
         raise ValueError(
             f"flare mouth Ø{2 * r_mouth:.1f} mm is not larger than the throat Ø{2 * r_throat:.1f} mm"
