@@ -1,6 +1,6 @@
 import pytest
 
-from speaker.coax_geometry import cavity_profile, flare_radii
+from speaker.coax_geometry import cavity_profile, flare_radii, recess_profile
 from speaker.drivers import load_driver
 from speaker.params import load_params
 
@@ -34,3 +34,24 @@ def test_cavity_profile_is_continuous_and_ordered():
 def test_cavity_profile_requires_cone_fields():
     with pytest.raises(ValueError, match="cone"):
         cavity_profile(P, load_driver("dayton_rss265ho_44"))
+
+
+def test_recess_profile_is_the_frame_opening_then_the_shared_cone():
+    segs = recess_profile(CX)
+    assert [n for n, _ in segs] == ["bore", "surround", "cone", "pole", "hf_exit"]
+    for (_, a), (_, b) in zip(segs, segs[1:]):
+        assert a[-1] == pytest.approx(b[0])
+    prof = dict(segs)
+    assert sum(prof["bore"], ()) == pytest.approx((CX.cutout_d / 2, 0.0, CX.cutout_d / 2, CX.flange_t))
+    assert prof["cone"][0] == pytest.approx((CX.diaphragm_d / 2, CX.flange_t))
+    assert prof["hf_exit"][-1] == pytest.approx((0.0, CX.flange_t + CX.cone_depth))
+    # The cone, pole and HF exit are the cavity's, moved forward from baffle_t to flange_t.
+    cav = dict(cavity_profile(P, CX))
+    dy = P.cabinet.baffle_t - CX.flange_t
+    for n in ("cone", "pole", "hf_exit"):
+        assert [v for r, y in prof[n] for v in (r, y + dy)] == pytest.approx(sum(cav[n], ()))
+
+
+def test_recess_profile_requires_cone_fields():
+    with pytest.raises(ValueError, match="cone"):
+        recess_profile(load_driver("dayton_rss265ho_44"))

@@ -249,7 +249,7 @@ def _stub_fields(monkeypatch, puck_calls):
     import speaker.directivity_report as dr
     from speaker.bem import analytic
     from speaker.bem.mesh import CABINET_TAGS, PUCK_TAGS
-    from speaker.bem.run import BAND_EDGES, CAB_H_COAX, CAB_H_VENT, SourceField, observation_set
+    from speaker.bem.run import BAND_EDGES, CAB_H_COAX, CAB_H_VENT, SourceField, freq_grid, observation_set
     o = observation_set(2.0)
     i0, i180 = o.h_idx[o.h_angles == 0][0], o.h_idx[o.h_angles == -180][0]
 
@@ -272,8 +272,13 @@ def _stub_fields(monkeypatch, puck_calls):
         f, pr, meta = make(f, PUCK_TAGS)
         ax = np.array([analytic.baffled_piston_on_axis(x, coax.hf_exit_d / 2, 1.0) for x in f]).conj()
         return SourceField(f, PUCK_TAGS, o, pr, {**meta, "axis_1m": np.stack([ax, ax], 1)})
+
+    def recess(coax, f=None, *, per_wavelength=6.0, cache_dir=None):   # a recess about 1 dB hot near 1 kHz
+        f = freq_grid(300.0, 4000.0, 6) if f is None else np.asarray(f, float)
+        return f, 10 ** (np.exp(-np.log2(f / 1000.0) ** 2) / 20) + 0j
     monkeypatch.setattr(dr, "cabinet_field", cab)
     monkeypatch.setattr(dr, "puck_field", puck)
+    monkeypatch.setattr(dr, "recess_ratio", recess)
     monkeypatch.setattr(dr, "_fine_dofs", _small_dofs)
 
 
@@ -307,12 +312,15 @@ def test_full_run_end_to_end_on_stub_fields(tmp_path, monkeypatch):
     assert "infinite-baffle piston" in page and "double-count" in page and "puck's on-axis response" in page
     assert "filler volumes" in page and "§7.1.1" in page
     assert "rear rejection" in page   # the mesh check note says what was compared
-    for png in ("polar_h", "polar_v", "spinorama", "window_family", "rear_rejection", "whole_rear"):
+    assert "times the recess ratio R" in page and "front-mounted on a large baffle" in page
+    assert "R runs 300-3810 Hz" in page and "plots/lf_reference.png" in page
+    for png in ("polar_h", "polar_v", "spinorama", "window_family", "rear_rejection", "whole_rear", "lf_reference"):
         assert (tmp_path / "plots" / f"{png}.png").stat().st_size > 0
     # A fast run in the same directory does not trust the full-run mesh check, and says why.
     page = dr.run_directivity(None, tmp_path, fast=True).read_text()
     assert "3000 Hz (unverified)" in page and "h_max" in page
     assert "piston of the HF exit" in page
+    assert "flat piston (fast run)" in page and "recess ratio" not in page
 
 
 def test_frequency_axis_shades_the_puck_blend():

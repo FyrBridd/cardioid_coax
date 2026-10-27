@@ -35,16 +35,17 @@ from speaker.drivers import Driver
 from speaker.layout import compute_layout
 from speaker.params import Params
 
-from .mesh import cabinet_mesh, puck_mesh
+from .mesh import cabinet_mesh, disc_baffle_mesh, puck_mesh
 from .solver import SurfaceMesh, solve_band
 
 BAND_EDGES = (250.0, 500.0, 1000.0, 2000.0, 3000.0, 4000.0, 8000.0, 12000.0)  # Hz
 OBS_R = 2.0  # m, observation radius for scores
-AXIS_R = 1.0  # m, distance of the extra on-axis point evaluated by puck_field
+AXIS_R = 1.0  # m, distance of the on-axis point evaluated by puck_field and recess_ratio
 PUCK_F_RANGE = (500.0, 12000.0)  # Hz
 PUCK_H_MAX = 0.03  # m
 PUCK_H_COAX = 0.010  # m, coax-region size at and below PUCK_HI_BAND
 PUCK_HI_BAND = 4000.0  # Hz, bands above this use h_coax = h
+RECESS_F = (300.0, 4000.0, 6)  # f_lo, f_hi, points per octave: recess_ratio's default grid
 LISTENER_AZ = 23.0  # deg, horizontal angle of the listening seat
 LW_EXTRA_EL = 10.0  # deg, listening-window extras at (LISTENER_AZ, ±el)
 FAR_R = 50.0  # m, distance of cabinet_field's far-field points on H 0° and H 180°
@@ -198,6 +199,32 @@ def puck_field(
         per_wavelength=per_wavelength, h_max=PUCK_H_MAX, cache_dir=cache_dir,
     )
     return SourceField(f, names, obs, pr[..., :-1], {**meta, "axis_1m": pr[..., -1]})
+
+
+def recess_ratio(
+    coax: Driver,
+    f: np.ndarray | None = None,
+    *,
+    per_wavelength: float = 6.0,
+    cache_dir: Path | None = Path("out/cache/bem"),
+) -> tuple[np.ndarray, np.ndarray]:
+    """(f, R): on-axis pressure AXIS_R in front of the coax cone in its own frame recess, front-mounted
+    on a disc baffle, over that of a flat piston of the diaphragm on the same disc (disc_baffle_mesh).
+
+    Both are per unit volume velocity, so R is the recess's own effect on the on-axis response, with
+    most of the disc's edge diffraction cancelled. The default f is freq_grid(*RECESS_F).
+    """
+    f = freq_grid(*RECESS_F) if f is None else np.asarray(f, dtype=float)
+    points = np.array([[0.0], [-AXIS_R], [0.0]])  # the disc's front face is at y=0, its axis the y axis
+
+    def on_axis(kind: str, recess: bool) -> np.ndarray:
+        def build(edge: float, h: float) -> SurfaceMesh:
+            return disc_baffle_mesh(coax, h=h, h_coax=min(h, PUCK_H_COAX), recess=recess)
+        pr, _, _ = _banded_field(kind, build, f, points, per_wavelength=per_wavelength, h_max=PUCK_H_MAX,
+                                 cache_dir=cache_dir)
+        return pr[:, 0, 0]
+
+    return f, on_axis("recess_disc", True) / on_axis("flat_disc", False)
 
 
 def _banded_field(

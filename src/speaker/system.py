@@ -5,8 +5,12 @@ obs.r for 2.83 V RMS into that way, unfiltered: the datasheet de-embedding gives
 volume velocities directly, and the lumped RMS volume velocities are scaled by √2.
 
 Coax LF volume velocity is the lumped cardioid model below LF_JOIN, the datasheet
-(de-embedded with a baffled piston, minimum phase) above it, blended across it. Coax HF
-is the datasheet de-embedded with the smoothed on-axis puck response. Fields are the
+(de-embedded with a baffled piston, minimum phase) above it, blended across it. Given the
+recess ratio R (speaker.bem.run.recess_ratio), the LF reference is the piston times R: the
+datasheet was measured with the cone in its own frame recess, which the 3D fields add again.
+Coax HF is the datasheet de-embedded with the on-axis puck response, smoothed as an excess
+over the HF exit's baffled piston. Above the top of R or of the puck, the reference continues
+as the piston curve, shifted by the last smoothed excess. Fields are the
 cabinet BEM alone up to trusted_limit, then blended into the puck BEM up to an octave
 above it (or the top of the cabinet field, at least BLEND_MIN_OCT), then the puck alone;
 the vents fade out across the blend, since the puck has none. Above PUCK_HOLD_F each
@@ -47,7 +51,8 @@ class Ways:
     f: np.ndarray
     obs: Observation
     ways: dict[str, np.ndarray]  # "bass", "coax_lf", "coax_hf": (nf, nd) complex peak Pa
-    # lf_join_mismatch_db, trusted_limit, hf_reference; u_lf: coax LF peak volume velocity up to the hold;
+    # lf_join_mismatch_db, trusted_limit, hf_reference ("puck" | "piston"), lf_reference ("recess" | "piston");
+    # u_lf: coax LF peak volume velocity up to the hold;
     # puck_blend: (lo, hi) Hz of the cabinet -> puck crossfade (lo = trusted limit), None without a puck
     # or when f stops at the trusted limit;
     # coax_far_h0_h180: (nf, 2) coax section at FAR_R on H 0° and 180°, NaN above the trusted
@@ -147,6 +152,22 @@ def _piston_db(f: np.ndarray, d: float) -> np.ndarray:
     return 20 * np.log10(np.abs([baffled_piston_on_axis(x, d / 2, 1.0) for x in f]))
 
 
+def recess_db(lf_recess: tuple[np.ndarray, np.ndarray], x: np.ndarray) -> np.ndarray:
+    """The LF reference's recess term on the increasing grid x (Hz): 20·log10|R|, 1/3-octave smoothed.
+
+    20·log10|R| is interpolated log-linearly onto the points of x inside R's range (and R's end
+    frequencies) and smoothed there, so the window is even whatever R's own spacing. Outside R's
+    range it holds its end values: the reference continues as the piston curve, shifted.
+    """
+    fr, r = (np.asarray(a) for a in lf_recess)
+    fr, x = fr.astype(float), np.asarray(x, dtype=float)
+    db = 20 * np.log10(np.abs(r))
+    xs = np.union1d(x[(x >= fr[0]) & (x <= fr[-1])], fr[[0, -1]])
+    d = np.interp(np.log(xs), np.log(fr), db)
+    sm = smooth(xs, d, REF_SMOOTH) if len(xs) > 1 else d
+    return np.interp(np.log(x), np.log(xs), sm)
+
+
 def _covers(fld: SourceField, lo: float, hi: float) -> bool:
     return fld.f[0] <= lo * (1 + 1e-9) and fld.f[-1] >= hi * (1 - 1e-9)
 
@@ -161,8 +182,13 @@ def way_responses(
     f: np.ndarray,
     *,
     trusted_limit: float,
+    lf_recess: tuple[np.ndarray, np.ndarray] | None = None,
 ) -> Ways:
-    """Complex peak pressure of each way at cab.obs for 2.83 V into it, on the grid f."""
+    """Complex peak pressure of each way at cab.obs for 2.83 V into it, on the grid f.
+
+    lf_recess: (f, R) from recess_ratio, the coax cone's own recess relative to a flat piston. When
+    given, the coax LF datasheet is de-embedded with the baffled piston times R (see recess_db).
+    """
     f = np.asarray(f, dtype=float)
     tl = float(trusted_limit)
     if np.any(np.diff(f) <= 0):
@@ -205,11 +231,21 @@ def way_responses(
     lf_spl, hf_spl = (interp_db(load_curve(f"{COAX_CURVES}_{w}_spl"), g) for w in ("lf", "hf"))
     hf_ref = _piston_db(g, coax.hf_exit_d)
     if puck is not None:
+        # The puck's on-axis level is smoothed as an excess over the HF exit's baffled piston (puck dB
+        # minus piston dB), and the piston added back. Above the puck's top the excess holds its last
+        # smoothed value, so the reference continues as the piston curve, shifted to meet the puck; below
+        # its bottom the reference is the piston alone. Smoothing the excess, not the absolute level,
+        # avoids the bias of a window cut short at the puck's ends on a rising curve. Against round 0b,
+        # which smoothed the absolute level, the reference moves by about 0.05 dB mid-band and up to
+        # about 0.5 dB at the puck's 500 Hz and 12 kHz ends.
         col = puck.meta["axis_1m"][:, _AXIS_COLS.index("coax_hf")]
-        sm = smooth(puck.f, 20 * np.log10(np.abs(col)), REF_SMOOTH)
+        excess = smooth(puck.f, 20 * np.log10(np.abs(col)) - _piston_db(puck.f, coax.hf_exit_d), REF_SMOOTH)
         inside = g >= puck.f[0]
-        hf_ref[inside] = np.interp(np.log(g[inside]), np.log(puck.f), sm)
-    u_db = {"lf": lf_spl + 20 * np.log10(P_PEAK_REF) - _piston_db(g, coax.diaphragm_d),
+        hf_ref[inside] += np.interp(np.log(g[inside]), np.log(puck.f), excess)
+    lf_ref = _piston_db(g, coax.diaphragm_d)
+    if lf_recess is not None:
+        lf_ref += recess_db(lf_recess, g)
+    u_db = {"lf": lf_spl + 20 * np.log10(P_PEAK_REF) - lf_ref,
             "hf": hf_spl + 20 * np.log10(P_PEAK_REF) - hf_ref}
     u_ph = {k: minimum_phase(g, v) for k, v in u_db.items()}
 
@@ -281,5 +317,6 @@ def way_responses(
         ways={"bass": bass_way, "coax_lf": extend(lf_i, "lf"), "coax_hf": extend(hf_i, "hf")},
         meta={"lf_join_mismatch_db": mismatch, "trusted_limit": tl, "u_lf": u_lf,
               "hf_reference": "puck" if puck is not None else "piston",
+              "lf_reference": "recess" if lf_recess is not None else "piston",
               "puck_blend": blend, "coax_far_h0_h180": far},
     )

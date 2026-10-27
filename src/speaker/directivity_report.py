@@ -26,7 +26,7 @@ from . import directivity_plots as plots
 from .bem import run as bem_run
 from .bem.mesh import cabinet_mesh
 from .bem.run import (BAND_EDGES, CAB_H_COAX, CAB_H_VENT, PUCK_F_RANGE, SourceField, cabinet_field, freq_grid,
-                      puck_field)
+                      puck_field, recess_ratio)
 from .bem.solver import BEM_MEMORY_BUDGET, estimate_bytes
 from .cardioid import front_back, simulate
 from .constants import C
@@ -38,7 +38,7 @@ from .params import DEFAULT_PATH, Params, load_params
 from .report import FB_AIM_BAND, FB_BAND
 from .scores import LW_RING, REAR_H, ROLL_ANGLES, Score, score_all
 from .spinorama import P_REF_PEAK, Spin, spinorama
-from .system import (BLEND_MIN_OCT, COAX_CURVES, PUCK_HOLD_F, V_DRIVE, Ways, coax_section,
+from .system import (BLEND_MIN_OCT, COAX_CURVES, PUCK_HOLD_F, V_DRIVE, Ways, coax_section, recess_db,
                      vent_scaled_section, way_responses)
 
 CACHE_DIR = Path("out/cache/bem")
@@ -115,8 +115,9 @@ def _datasheet_fallback() -> dict[str, float]:
 
 
 def _evaluate(d: _Design, cab: SourceField, puck: SourceField | None, f: np.ndarray, tl: float,
-              xo: FixedCrossover) -> tuple[Ways, np.ndarray, dict[str, float], Spin]:
-    ways = way_responses(d.p, d.coax, d.bass, d.layout, cab, puck, f, trusted_limit=tl)
+              xo: FixedCrossover, lf_recess: tuple[np.ndarray, np.ndarray] | None = None,
+              ) -> tuple[Ways, np.ndarray, dict[str, float], Spin]:
+    ways = way_responses(d.p, d.coax, d.bass, d.layout, cab, puck, f, trusted_limit=tl, lf_recess=lf_recess)
     total, gains = apply_crossover(ways, xo, fallback_db=_datasheet_fallback())
     return ways, total, gains, spinorama(total, ways.obs, f=f)
 
@@ -330,8 +331,13 @@ def run_directivity(params_path: Path | None, out_dir: Path, *, fast: bool = Fal
     t0 = time.perf_counter()
     cab = _banded(lambda x: cabinet_field(d.p, d.coax, d.bass, x, h_max=h_max, **kw), f_cab, "cabinet")
     puck = None if fp is None else _banded(lambda x: puck_field(d.p, d.coax, x, **kw), fp, "puck")
+    rec = None
+    if not fast:
+        t1 = time.perf_counter()
+        rec = recess_ratio(d.coax, cache_dir=CACHE_DIR)
+        print(f"recess ratio: {len(rec[0])} frequencies, {time.perf_counter() - t1:.1f} s", file=sys.stderr, flush=True)
     xo = FixedCrossover()
-    ways, total, gains, spin = _evaluate(d, cab, puck, f, tl, xo)
+    ways, total, gains, spin = _evaluate(d, cab, puck, f, tl, xo, lf_recess=rec)
     obs, sec = ways.obs, coax_section(ways)
     blend, far = ways.meta["puck_blend"], ways.meta["coax_far_h0_h180"]
     scores = score_all(f, total, sec, obs, spin, trusted_limit=tl, xo=xo, puck_blend=blend, coax_far=far)
@@ -369,11 +375,15 @@ def run_directivity(params_path: Path | None, out_dir: Path, *, fast: bool = Fal
                          f"x{VENT_SPREAD[0]:g}-x{VENT_SPREAD[1]:g}", title, far=far_rej)
     plots.whole_rear(plot_dir / "whole_rear.png", f[f <= min(f[-1], 2000.0)],
                      rej(total)[f <= min(f[-1], 2000.0)], xo.bass_coax)
+    if rec is not None:
+        fs = np.geomspace(rec[0][0], rec[0][-1], 200)
+        plots.lf_reference(plot_dir / "lf_reference.png", rec[0], 20 * np.log10(np.abs(rec[1])), fs,
+                           recess_db(rec, fs))
 
     (out_dir / "scores.json").write_text(
         json.dumps(_jsonable([dataclasses.asdict(s) for s in scores]), indent=2, allow_nan=False))
     page = _html(d, fast=fast, mc=mc, mc_why=mc_why, tl_text=tl_text, scores=scores, gains=gains, xo=xo, ways=ways,
-                 vent=vent, cp=cp, max_diff=max_diff, fields={"cabinet": cab, "puck": puck},
+                 vent=vent, cp=cp, max_diff=max_diff, fields={"cabinet": cab, "puck": puck}, lf_recess=rec,
                  wall=time.perf_counter() - t0)
     path = out_dir / "report.html"
     path.write_text(page)
@@ -403,7 +413,8 @@ def _row(cells: list[str], cls: str = "") -> str:
     return f"<tr{f' class={cls!r}' if cls else ''}>" + "".join(cells) + "</tr>"
 
 
-def _html(d: _Design, *, fast, mc, mc_why, tl_text, scores, gains, xo, ways, vent, cp, max_diff, fields, wall) -> str:
+def _html(d: _Design, *, fast, mc, mc_why, tl_text, scores, gains, xo, ways, vent, cp, max_diff, fields, wall,
+          lf_recess=None) -> str:
     e = html.escape
     sha = _params_sha(d)
     head = [("Params", f"{e(str(d.path))}<br><code>sha256 {sha}</code>"),
@@ -434,6 +445,7 @@ def _html(d: _Design, *, fast, mc, mc_why, tl_text, scores, gains, xo, ways, ven
     else:
         how = f"{tl_text}: {mc_why}"
     mismatch = ways.meta["lf_join_mismatch_db"]
+    rec_lo, rec_hi = (float(lf_recess[0][0]), float(lf_recess[0][-1])) if lf_recess is not None else (0.0, 0.0)
     notes = [
         f"<b>Trusted 3D limit</b> {how}. Scores are split at the limit; rows above it are grey "
         "(low confidence) and do not rank designs.",
@@ -453,9 +465,23 @@ def _html(d: _Design, *, fast, mc, mc_why, tl_text, scores, gains, xo, ways, ven
         "400 Hz; the coax LF strength is blended between them across 300-500 Hz.",
         "<b>Datasheet de-embedding</b>: above the LF join the coax LF volume velocity is the datasheet on-axis "
         f"response divided by that of an infinite-baffle piston of the diaphragm diameter "
-        f"({d.coax.diaphragm_d * 1000:.0f} mm) at 1 m. The datasheet already contains the real cone and cavity "
-        "geometry, which the 3D field adds again, so this may double-count it. The coax HF volume velocity uses "
-        + ("the puck's on-axis response at 1 m (1/3-octave smoothed) as its reference."
+        f"({d.coax.diaphragm_d * 1000:.0f} mm) at 1 m"
+        + (", times the recess ratio R. The datasheet already contains the cone's own recess, which the 3D "
+           "field adds again; dividing by the piston alone would double-count it. R is the BEM on-axis "
+           "pressure at 1 m of the cone in its own frame recess, front-mounted on a 1 m diameter disc baffle, "
+           "over that of a flat piston of the diaphragm on the same disc, both per unit volume velocity, so most "
+           f"of the disc's edge diffraction cancels. R runs {rec_lo:.0f}-{rec_hi:.0f} Hz, is 1/3-octave smoothed, and holds "
+           "its end values outside that range (plots/lf_reference.png). <i>Assumption:</i> the datasheet was "
+           f"measured front-mounted on a large baffle, through a frame opening of the cutout "
+           f"({d.coax.cutout_d * 1000:.0f} mm) with the surround {d.coax.flange_t * 1000:.0f} mm (the flange) "
+           "behind the mounting face."
+           if ways.meta["lf_reference"] == "recess" else
+           ": flat piston (fast run). The datasheet already contains the cone's own recess, which the 3D field "
+           "adds again, so this may double-count it.")
+        + " The coax HF volume velocity uses "
+        + ("the puck's on-axis response at 1 m as its reference, 1/3-octave smoothed as an excess over the "
+           "HF exit's infinite-baffle piston; above the puck's top the reference continues as that piston, "
+           "shifted to meet the puck."
            if ways.meta["hf_reference"] == "puck" else
            f"an infinite-baffle piston of the HF exit ({d.coax.hf_exit_d * 1000:.1f} mm) at 1 m as its reference "
            "(no puck in this run)."),
@@ -512,6 +538,9 @@ def _html(d: _Design, *, fast, mc, mc_why, tl_text, scores, gains, xo, ways, ven
         fig("rear_rejection", "Coax section alone (cone plus vents, no bass, before the crossover filter): "
                               "front minus back. Shaded: 3D result with the vent strength taken at vent resistance ×0.7 to ×1.3."),
         fig("whole_rear", "Info only: the whole speaker after the crossover, front minus back."),
+        (fig("lf_reference", "Coax LF de-embedding: the recess ratio R (cone in its frame recess over a flat "
+                             "piston, both on a 1 m diameter disc baffle, on axis at 1 m) and the smoothed curve "
+                             "applied to the LF reference.") if lf_recess is not None else ""),
         "<h2>Scores</h2>",
         "<table><tr><th>Score</th><th>Value</th><th>Unit</th><th>Status</th><th>Band</th><th>Confidence</th>"
         "<th>Formula</th></tr>" + "".join(srows) + "</table>",

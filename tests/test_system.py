@@ -1,12 +1,13 @@
 import numpy as np, pytest
 from speaker.bem import analytic
-from speaker.bem.run import SourceField, observation_set
+from speaker.bem.run import SourceField, freq_grid, observation_set
 from speaker.cardioid import simulate
 from speaker.drivers import load_driver
 from speaker.layout import cardioid_params, compute_layout
 from speaker.params import load_params
 from speaker.system import way_responses, coax_section, LF_JOIN
 from speaker.curves import load_curve, interp_db
+from fakes import monopole_field, monopole_puck
 
 P, CX, B = load_params(), load_driver("bms_10c262"), load_driver("dayton_rss265ho_44")
 L = compute_layout(P, CX, B)
@@ -206,3 +207,38 @@ def test_puck_blend_narrower_than_a_third_octave_is_refused():
     cab = SourceField(f32, fld.names, fld.obs, fld.p[: len(f32)], {"axis_1m": fld.meta["axis_1m"][: len(f32)]})
     with pytest.raises(ValueError, match="blend"):
         way_responses(P, CX, B, L, cab, fld, F, trusted_limit=3000.0)
+
+
+def test_lf_recess_lowers_the_datasheet_strength(design):
+    f = np.geomspace(120.0, 2000.0, 40)
+    cab = monopole_field(design.p, design.coax, design.bass, f)
+    flat = way_responses(design.p, design.coax, design.bass, design.layout, cab, None, f,
+                         trusted_limit=2000.0, lf_recess=None)
+    plus6 = way_responses(design.p, design.coax, design.bass, design.layout, cab, None, f, trusted_limit=2000.0,
+                          lf_recess=(np.array([300.0, 4000.0]), np.full(2, 10 ** (6 / 20) + 0j)))
+    i1k, i150 = np.argmin(abs(f - 1000)), np.argmin(abs(f - 150))
+    assert abs(plus6.meta["u_lf"][i1k]) == pytest.approx(abs(flat.meta["u_lf"][i1k]) / 10 ** (6 / 20), rel=1e-3)
+    assert plus6.meta["u_lf"][i150] == pytest.approx(flat.meta["u_lf"][i150])  # lumped below the join
+    assert plus6.meta["lf_reference"] == "recess"
+    assert flat.meta["lf_reference"] == "piston"
+
+
+def test_hf_reference_continues_as_piston_above_the_puck(design):
+    from speaker.system import PUCK_HOLD_F, _piston_db
+    p, coax, bass, lay = design.p, design.coax, design.bass, design.layout
+    hf_d = coax.hf_exit_d
+    # A puck to 4 kHz whose on-axis HF level is the baffled piston of the HF exit plus 3 dB.
+    puck = monopole_puck(p, coax, freq_grid(500.0, 4000.0, 12), hf_axis_db=lambda x: _piston_db(x, hf_d) + 3.0)
+    f = np.union1d(np.geomspace(500.0, 11000.0, 50), [2000.0, 8000.0])
+    cab = monopole_field(p, coax, bass, f)
+    # trusted_limit at the hold: no blend, so both runs use the same cabinet field and the coax_hf
+    # way ratio is the u_hf ratio. The puck serves only as the HF reference.
+    w_puck = way_responses(p, coax, bass, lay, cab, puck, f, trusted_limit=PUCK_HOLD_F)
+    w_pist = way_responses(p, coax, bass, lay, cab, None, f, trusted_limit=PUCK_HOLD_F)
+    assert (w_puck.meta["hf_reference"], w_pist.meta["hf_reference"]) == ("puck", "piston")
+    i0 = w_puck.obs.h_idx[w_puck.obs.h_angles == 0][0]
+    d_db = 20 * np.log10(np.abs(w_puck.ways["coax_hf"][:, i0]) / np.abs(w_pist.ways["coax_hf"][:, i0]))
+    # Above the puck's top the reference is the piston shifted by the puck's last smoothed excess
+    # (+3 dB), not the puck's 4 kHz level held (which puts 8 kHz about 3.5 dB above the piston-only run).
+    assert d_db[f == 8000.0][0] == pytest.approx(-3.0, abs=0.1)
+    assert d_db[f == 2000.0][0] == pytest.approx(-3.0, abs=0.1)   # inside the puck's range

@@ -5,7 +5,7 @@ import numpy as np, pytest
 from speaker.bem import analytic
 from speaker.bem.mesh import box_piston_mesh
 from fakes import default_design
-from speaker.bem.run import freq_grid, observation_set, cabinet_field, code_version
+from speaker.bem.run import freq_grid, observation_set, cabinet_field, code_version, recess_ratio
 from speaker.bem.solver import solve_band
 from speaker.constants import C, RHO
 from speaker.drivers import load_driver
@@ -217,3 +217,29 @@ def test_cache_hit_skips_solver(tmp_path, monkeypatch):
     P2 = dataclasses.replace(P, cabinet=dataclasses.replace(P.cabinet, coax_centre_z=P.cabinet.coax_centre_z + 0.01))
     with pytest.raises(AssertionError, match="solver called"):
         cabinet_field(P2, CX, B, np.array([60.0]), h_max=0.1, cache_dir=tmp_path)
+
+def test_recess_ratio_divides_the_recess_by_the_flat_disc_on_axis(monkeypatch, tmp_path):
+    calls = {}
+
+    def fake(kind, build, f, points, *, per_wavelength, h_max, cache_dir):
+        calls[kind] = (np.asarray(f), points, h_max, cache_dir)
+        v = {"recess_disc": 3.0 + 1j, "flat_disc": 2.0}[kind]
+        return np.full((len(f), 1, points.shape[1]), v), ("coax_lf",), {"bands": []}
+    monkeypatch.setattr(run, "_banded_field", fake)
+    f, r = recess_ratio(load_driver("bms_10c262"), cache_dir=tmp_path)
+    assert np.array_equal(f, freq_grid(300.0, 4000.0, 6))
+    assert np.allclose(r, (3.0 + 1j) / 2.0)
+    assert set(calls) == {"recess_disc", "flat_disc"}
+    for _, points, h_max, cache_dir in calls.values():
+        assert np.allclose(points, [[0.0], [-run.AXIS_R], [0.0]])   # 1 m on axis, in front of the disc
+        assert h_max == run.PUCK_H_MAX and cache_dir == tmp_path
+
+@pytest.mark.bem
+def test_recess_ratio_near_unity_at_300_hz(tmp_path):
+    f, r = recess_ratio(load_driver("bms_10c262"), np.array([40.0, 300.0]), cache_dir=tmp_path)
+    db = 20 * np.log10(np.abs(r))
+    # At low frequency the recess air moves as a plug, so the source appears at the opening, as the flat piston.
+    assert abs(db[0]) < 0.05
+    # The recess air is also a small front chamber (about 1.4 L behind a 230 mm opening, resonant near
+    # 950 Hz), so R rises as f²: about +1.06 dB at 300 Hz, though the recess is small against λ = 1.14 m.
+    assert abs(db[1]) < 1.5

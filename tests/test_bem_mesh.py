@@ -4,7 +4,8 @@ import math
 import numpy as np
 import pytest
 
-from speaker.bem.mesh import box_piston_mesh, cabinet_mesh, edge_check, puck_mesh
+from speaker.bem.mesh import (DISC_R, PUCK_EXTRA_DEPTH, box_piston_mesh, cabinet_mesh, disc_baffle_mesh, edge_check,
+                              puck_mesh)
 from speaker.drivers import load_driver
 from speaker.params import load_params
 
@@ -63,3 +64,22 @@ def test_edge_check_rejects_inward_and_inconsistent_normals():
     mixed[0] = mixed[0, ::-1]
     with pytest.raises(ValueError, match="inconsistent"):
         edge_check(dataclasses.replace(m, triangles=mixed))
+
+
+@pytest.mark.parametrize("recess", [True, False])
+def test_disc_baffle_mesh_closed_and_tagged(recess):
+    m = disc_baffle_mesh(load_driver("bms_10c262"), h=0.08, h_coax=0.02, recess=recess)
+    assert m.tag_names == ("coax_lf",)
+    assert np.count_nonzero(m.tags == 1) > 0  # edge_check already ran inside the mesher
+    if recess:   # the cone, set back by the frame's flange
+        slant = math.hypot(CX.cone_depth, (CX.diaphragm_d - CX.cone_inner_d) / 2)
+        assert _area(m, "coax_lf") == pytest.approx(math.pi * (CX.diaphragm_d + CX.cone_inner_d) / 2 * slant, rel=0.03)
+        y = m.vertices[m.triangles[m.tags == 1]][..., 1]
+        assert y.min() == pytest.approx(CX.flange_t, abs=1e-6)
+        assert y.max() == pytest.approx(CX.flange_t + CX.cone_depth, abs=1e-6)
+    else:   # a flat piston of the diaphragm on the front face
+        assert _area(m, "coax_lf") == pytest.approx(math.pi * CX.diaphragm_d**2 / 4, rel=0.03)
+        assert np.allclose(m.vertices[m.triangles[m.tags == 1]][..., 1], 0.0, atol=1e-9)
+    r = np.hypot(m.vertices[:, 0], m.vertices[:, 2])
+    assert r.max() == pytest.approx(DISC_R, rel=1e-6)
+    assert m.vertices[:, 1].max() == pytest.approx(CX.flange_t + CX.cone_depth + PUCK_EXTRA_DEPTH, abs=1e-6)
