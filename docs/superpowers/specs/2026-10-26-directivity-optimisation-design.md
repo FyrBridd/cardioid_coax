@@ -255,7 +255,8 @@ params file. Parameters that don't exist yet are added there.
     limit to an octave above it, or to the top of the 3D solve if that comes
     first, and it is at least a third of an octave wide. With the 3D solve
     ending near 3.8 kHz, it covers 2.85–3.8 kHz. The 3D results in the
-    crossfade are not mesh-checked.
+    crossfade are not mesh-checked. The axisymmetric model has no vents, so
+    the vents fade out across the crossfade.
 - **Driver data:**
   - The datasheet on-axis and impedance curves of both drivers are digitised
     once into `data/` with their source noted.

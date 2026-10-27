@@ -48,7 +48,8 @@ class Ways:
     obs: Observation
     ways: dict[str, np.ndarray]  # "bass", "coax_lf", "coax_hf": (nf, nd) complex peak Pa
     # lf_join_mismatch_db, trusted_limit, hf_reference; u_lf: coax LF peak volume velocity up to the hold;
-    # puck_blend: (lo, hi) Hz of the cabinet -> puck crossfade (lo = trusted limit), None without a puck;
+    # puck_blend: (lo, hi) Hz of the cabinet -> puck crossfade (lo = trusted limit), None without a puck
+    # or when f stops at the trusted limit;
     # coax_far_h0_h180: (nf, 2) coax section at FAR_R on H 0° and 180°, NaN above the trusted
     # limit, None when the cabinet field has no far-field points
     meta: dict
@@ -87,7 +88,7 @@ def vent_scaled_section(
 
 def _vent_fade(f: np.ndarray, tl: float, blend: tuple[float, float] | None) -> np.ndarray:
     """Weight of the cabinet vent fields: 1 up to tl, fading to 0 across the puck blend."""
-    if blend is None or blend[1] <= blend[0]:
+    if blend is None:
         return (f <= tl).astype(float)
     return np.where(f < blend[1], 1.0 - _log_ramp(f, *blend), 0.0)
 
@@ -174,8 +175,9 @@ def way_responses(
         if f[-1] > tl:
             raise ValueError(f"without a puck field f must stop at trusted_limit, {tl:g} Hz")
     else:
-        blend = (tl, float(min(2 * tl, cab.f[-1])))
-        if f[-1] > tl and np.log2(blend[1] / tl) < BLEND_MIN_OCT - 1e-9:
+        if f[-1] > tl:
+            blend = (tl, float(min(2 * tl, cab.f[-1], PUCK_HOLD_F)))
+        if blend is not None and np.log2(blend[1] / tl) < BLEND_MIN_OCT - 1e-9:
             raise ValueError(f"cabinet field stops at {cab.f[-1]:g} Hz: the cabinet-to-puck blend above the "
                              f"trusted limit {tl:g} Hz needs it to reach {tl * 2 ** BLEND_MIN_OCT:g} Hz")
         need = (tl, min(f[-1], PUCK_HOLD_F))

@@ -160,6 +160,46 @@ def test_puck_blend_range_in_meta():
     assert way_responses(P, CX, B, L, fld, None, f, trusted_limit=3000.0).meta["puck_blend"] is None
 
 
+def test_vents_fade_out_across_the_puck_blend():
+    from speaker.system import _log_ramp
+    silent = _piston_field(F)
+    loud = _piston_field(F)
+    o = loud.obs
+    for k, sg in ((2, 0.3), (3, -0.2)):   # direction-dependent vents
+        loud.p[:, k, :] = loud.p[:, 0, :] * (0.5 + sg * o.dirs[:, 1])[None, :]
+    tl = 3000.0
+    w_s = way_responses(P, CX, B, L, silent, silent, F, trusted_limit=tl)
+    w_l = way_responses(P, CX, B, L, loud, silent, F, trusted_limit=tl)   # same puck, so only the vents differ
+    lo, hi = w_l.meta["puck_blend"]
+    assert (lo, hi) == (tl, 2 * tl)
+    n = len(w_l.meta["u_lf"])   # grid points up to the 12 kHz hold
+    f, vent = F[:n], (coax_section(w_l) - coax_section(w_s))[:n]
+    # The full vent term, from the cabinet field at full strength: u_vent per vent times both vent fields.
+    lump = simulate(CX, cardioid_params(P, L, CX), f, 2.83)
+    u_vent = lump.u_vent / lump.u_cone * w_l.meta["u_lf"] / 2
+    full = u_vent[:, None] * (loud.p[:n, 2, :] + loud.p[:n, 3, :])
+    m = f <= tl
+    assert np.allclose(vent[m], full[m], rtol=1e-9, atol=0)
+    j = (f > lo) & (f < hi)
+    assert j.sum() > 10
+    assert np.allclose(vent[j], (1 - _log_ramp(f[j], lo, hi))[:, None] * full[j], rtol=1e-9, atol=0)
+    assert np.all(vent[f >= hi] == 0)
+
+
+def test_no_blend_when_the_grid_stops_at_the_trusted_limit():
+    fld = _piston_field(F)
+    f = F[F <= 3000.0]
+    w = way_responses(P, CX, B, L, fld, fld, f, trusted_limit=3000.0)
+    assert w.meta["puck_blend"] is None
+    assert w.meta["hf_reference"] == "puck"
+
+
+def test_puck_blend_stops_at_the_hold():
+    fld = _piston_field(F)   # cabinet field to 16 kHz
+    w = way_responses(P, CX, B, L, fld, fld, F, trusted_limit=8000.0)
+    assert w.meta["puck_blend"] == (8000.0, 12000.0)
+
+
 def test_puck_blend_narrower_than_a_third_octave_is_refused():
     fld = _piston_field(F)
     f32 = F[F <= 3200.0]
