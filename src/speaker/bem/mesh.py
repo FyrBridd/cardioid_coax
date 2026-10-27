@@ -17,8 +17,9 @@ import numpy as np
 from speaker.bem.solver import SurfaceMesh
 from speaker.coax_geometry import Profile, cavity_profile, recess_profile
 from speaker.drivers import Driver
+from speaker.front_shape import FAMILIES, cut_depth
 from speaker.layout import compute_layout
-from speaker.params import Params
+from speaker.params import Cabinet, Params
 
 CAVITY_REFINE = 0.020  # m, h_coax applies within this distance of the coax cavity
 PUCK_EXTRA_DEPTH = 0.030  # m, puck depth behind the cone's inner edge
@@ -26,6 +27,7 @@ PUCK_FILLET = 0.020  # m, front rim radius of the puck
 FRONT_EXT = 0.010  # m, cavity extends this far in front of y=0 so the cut is not coplanar
 DISC_R = 0.5  # m, radius of the disc baffle of the recess-ratio run
 MIN_CIRCLE_NODES = 24  # per circle: an inscribed polygon then loses about 1 % of a disc's area
+ROUNDOVER_SEGMENTS = 12  # chords per quarter arc of a roundover: they then miss about 1 % of its cut
 _MATCH_TOL = 1e-5  # m on centre of mass; relative on area
 
 CABINET_TAGS = ("coax_lf", "coax_hf", "vent_left", "vent_right", "bass_lower", "bass_upper")
@@ -47,7 +49,7 @@ def cabinet_mesh(
     r_bass = bass.diaphragm_d / 2
     with _session():
         occ = gmsh.model.occ
-        body = occ.addBox(0, 0, 0, w, d, lay.height)
+        body = _front_edges(occ.addBox(0, 0, 0, w, d, lay.height), p.cabinet, lay.height)
         cavity, cavity_box, coax_sigs = _cavity(cavity_profile(p, coax), lay.coax_centre)
         occ.cut([(3, body)], [(3, cavity)])
         vents, vent_sigs = [], []
@@ -60,10 +62,75 @@ def cabinet_mesh(
             disc_sigs.append(((x, 0.0, z), math.pi * r_bass**2))
         occ.fragment(occ.getEntities(3), [(2, s) for s in vents + discs])
         occ.synchronize()
+        if p.cabinet.front_edge == "roundover":
+            _structured_roundovers(p.cabinet, lay.height, h)
         fields = [_cavity_field(cavity_box, h, h_coax)]
         for x in (0.0, w):
             fields.append(_box_field((x, y0, z0), (x, y1, z1), min(h, h_vent), h))
         return _mesh_and_read(h, fields, CABINET_TAGS, coax_sigs + vent_sigs + disc_sigs)
+
+
+def _front_edges(body: int, c: Cabinet, height: float) -> int:
+    """Cut the front_edge family into the two vertical front edges of the box (x=0 and x=width at y=0)."""
+    occ = gmsh.model.occ
+    if c.front_edge == "square":
+        return body
+    if c.front_edge in ("roundover", "chamfer"):
+        e = 1e-6
+        edges = [t for x in (0.0, c.width)
+                 for _, t in occ.getEntitiesInBoundingBox(x - e, -e, -e, x + e, e, height + e, dim=1)]
+        if c.front_edge == "roundover":
+            out = occ.fillet([body], edges, [c.edge_size])
+        else:
+            fronts = [t for _, t in occ.getEntitiesInBoundingBox(-e, -e, -e, c.width + e, e, height + e, dim=2)]
+            out = occ.chamfer([body], edges, fronts * len(edges), [c.edge_size])
+        return next(t for dim, t in out if dim == 3)
+    if c.front_edge == "facets":
+        left = _facet_wedge(c, height + FRONT_EXT)  # past the top, so the cut is not coplanar with it
+        right = occ.copy(left)
+        occ.mirror(right, 1, 0, 0, -c.width / 2)
+        out, _ = occ.cut([(3, body)], left + right)
+        return next(t for dim, t in out if dim == 3)
+    raise ValueError(f"front_edge {c.front_edge!r} is not one of {FAMILIES}")
+
+
+def _structured_roundovers(c: Cabinet, height: float, h: float) -> None:
+    """Mesh each roundover strip as a structured grid: ROUNDOVER_SEGMENTS chords round the arc, h up it.
+
+    The strip is edge_size wide round its arc, far below h, so the free mesher would span it with one
+    or two chords and turn the roundover into a chamfer.
+    """
+    e = 1e-6
+    r = c.edge_size
+    for x_lo in (0.0, c.width - r):
+        (surf,) = [t for _, t in gmsh.model.getEntitiesInBoundingBox(x_lo - e, -e, -e, x_lo + r + e, r + e,
+                                                                         height + e, dim=2)
+                   if gmsh.model.getType(2, t) == "Cylinder"]
+        for _, curve in gmsh.model.getBoundary([(2, surf)], combined=False, oriented=False):
+            lo, hi = np.array(gmsh.model.getBoundingBox(1, curve)).reshape(2, 3)
+            n = ROUNDOVER_SEGMENTS if hi[2] - lo[2] < e else max(1, math.ceil((hi[2] - lo[2]) / h))
+            gmsh.model.mesh.setTransfiniteCurve(curve, n + 1)
+        gmsh.model.mesh.setTransfiniteSurface(surf)
+
+
+def _facet_wedge(c: Cabinet, top: float) -> list[tuple[int, int]]:
+    """The left facet's cut: the triangle (0,0), (fw,0), (0,d) as a prism from base + ramp to top,
+    and below it, when the ramp is > 0, the tetrahedron down to (0, 0, base) whose slant face is the ramp."""
+    occ = gmsh.model.occ
+    fw, fd = c.facet_width, cut_depth(c)
+    zb, zr = c.facet_base_z, c.facet_base_z + c.facet_ramp
+    a1, b1, c1 = (occ.addPoint(x, y, zr) for x, y in ((0.0, 0.0), (fw, 0.0), (0.0, fd)))
+    lines = [occ.addLine(a1, b1), occ.addLine(b1, c1), occ.addLine(c1, a1)]
+    base = occ.addPlaneSurface([occ.addCurveLoop(lines)])
+    wedge = [(d, t) for d, t in occ.extrude([(2, base)], 0, 0, top - zr) if d == 3]
+    if c.facet_ramp > 0:
+        a0 = occ.addPoint(0.0, 0.0, zb)
+        down = {q: occ.addLine(a0, q) for q in (a1, b1, c1)}
+        faces = [base]
+        for (p0, p1), ln in zip(((a1, b1), (b1, c1), (c1, a1)), lines):
+            faces.append(occ.addPlaneSurface([occ.addCurveLoop([down[p0], ln, -down[p1]])]))
+        wedge.append((3, occ.addVolume([occ.addSurfaceLoop(faces)])))
+    return wedge
 
 
 def puck_mesh(p: Params, coax: Driver, *, h: float, h_coax: float) -> SurfaceMesh:
@@ -133,6 +200,11 @@ def edge_check(m: SurfaceMesh) -> None:
     vol = _signed_volume(m.vertices, t)
     if vol <= 0:
         raise ValueError(f"signed volume {vol:.3g} m^3 is not positive: normals point inward")
+
+
+def mesh_volume(m: SurfaceMesh) -> float:
+    """Signed volume enclosed by the mesh, m^3 (positive for outward normals)."""
+    return _signed_volume(m.vertices, np.asarray(m.triangles))
 
 
 @contextmanager

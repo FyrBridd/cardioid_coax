@@ -24,18 +24,28 @@ Profile = tuple[tuple[str, tuple[tuple[float, float], ...]], ...]
 
 
 def cavity_profile(p: Params, coax: Driver, n_arc: int = 16) -> Profile:
-    """Labelled (r, y) polylines from the flare mouth inwards to the axis."""
+    """Labelled (r, y) polylines from the flare mouth inwards to the axis.
+
+    The flare runs through the outer baffle layer (y from 0 to outer_baffle_t), the bore at the
+    throat radius through the inner layer (to baffle_t). flare_profile "ellipse" is a quarter
+    ellipse of n_arc segments, "cone" one straight segment from the mouth to the throat.
+    """
     _require_cone(coax)
     r_throat, r_mouth, _ = flare_radii(p, coax)
     if r_mouth <= r_throat:
         raise ValueError("flare mouth is not larger than the throat")
-    t, bt = p.cabinet.panel_t, p.cabinet.baffle_t
+    t, bt = p.cabinet.outer_baffle_t, p.cabinet.baffle_t
     a = r_mouth - r_throat
-    # Quarter-ellipse centred (r_mouth, t): tangent to the front face at the mouth, to the axis at the throat.
-    flare = tuple(
-        (r_mouth - a * math.sin(th), t - t * math.cos(th))
-        for th in (math.pi / 2 * i / n_arc for i in range(n_arc + 1))
-    )
+    if p.cabinet.flare_profile == "ellipse":
+        # Quarter-ellipse centred (r_mouth, t): tangent to the front face at the mouth, to the axis at the throat.
+        flare = tuple(
+            (r_mouth - a * math.sin(th), t - t * math.cos(th))
+            for th in (math.pi / 2 * i / n_arc for i in range(n_arc + 1))
+        )
+    elif p.cabinet.flare_profile == "cone":
+        flare = ((r_mouth, 0.0), (r_throat, t))
+    else:
+        raise ValueError(f"flare_profile {p.cabinet.flare_profile!r} is not 'ellipse' or 'cone'")
     return (
         ("flare", flare),
         ("bore", ((r_throat, t), (r_throat, bt))),

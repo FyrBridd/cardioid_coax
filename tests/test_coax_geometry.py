@@ -1,3 +1,5 @@
+import dataclasses
+
 import pytest
 
 from speaker.coax_geometry import cavity_profile, flare_radii, recess_profile
@@ -55,3 +57,40 @@ def test_recess_profile_is_the_frame_opening_then_the_shared_cone():
 def test_recess_profile_requires_cone_fields():
     with pytest.raises(ValueError, match="cone"):
         recess_profile(load_driver("dayton_rss265ho_44"))
+
+
+def _with(**kw):
+    c = dataclasses.replace(P.cabinet, **kw)
+    return dataclasses.replace(P, cabinet=dataclasses.replace(c, baffle_t=c.outer_baffle_t + c.panel_t))
+
+
+@pytest.mark.parametrize("profile", ["ellipse", "cone"])
+def test_flare_runs_over_the_outer_baffle_and_the_bore_over_the_inner(profile):
+    p = _with(outer_baffle_t=0.030, flare_profile=profile)
+    prof = dict(cavity_profile(p, CX))
+    r_throat, r_mouth, _ = flare_radii(p, CX)
+    assert prof["flare"][0] == pytest.approx((r_mouth, 0.0))
+    assert prof["flare"][-1] == pytest.approx((r_throat, 0.030))
+    assert sum(prof["bore"], ()) == pytest.approx((r_throat, 0.030, r_throat, 0.048))
+    assert prof["surround"][0] == pytest.approx((r_throat, 0.048))
+
+
+def test_cone_flare_is_one_straight_segment():
+    p = _with(flare_profile="cone")
+    r_throat, r_mouth, _ = flare_radii(p, CX)
+    flare = dict(cavity_profile(p, CX))["flare"]
+    assert sum(flare, ()) == pytest.approx((r_mouth, 0.0, r_throat, P.cabinet.outer_baffle_t))
+
+
+def test_ellipse_flare_is_tangent_to_the_front_and_the_bore():
+    flare = dict(cavity_profile(_with(outer_baffle_t=0.030), CX))["flare"]
+    assert len(flare) == 17
+    (r0, y0), (r1, y1) = flare[:2]
+    assert abs(y1 - y0) < 0.1 * abs(r1 - r0)  # leaves the front face nearly radially
+    (r0, y0), (r1, y1) = flare[-2:]
+    assert abs(r1 - r0) < 0.1 * abs(y1 - y0)  # meets the bore nearly axially
+
+
+def test_unknown_flare_profile_is_rejected():
+    with pytest.raises(ValueError, match="flare_profile"):
+        cavity_profile(_with(flare_profile="horn"), CX)
