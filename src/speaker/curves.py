@@ -62,7 +62,24 @@ def _end_slope(lf: np.ndarray, db: np.ndarray, at_top: bool) -> float:
     return float(np.polyfit(lf[m], db[m], 1)[0])
 
 
+_MP_CACHE: dict[tuple[bytes, bytes], np.ndarray] = {}
+_MP_CACHE_MAX = 8
+
+
 def minimum_phase(f: np.ndarray, db: np.ndarray) -> np.ndarray:
+    """_minimum_phase, remembering the last few results: way_responses repeats it on the same datasheet
+    for every vent resistance and chamber volume a tuning tries, and the FFTs dominate its cost."""
+    f = np.asarray(f, dtype=float)
+    db = np.asarray(db, dtype=float)
+    key = (f.tobytes(), db.tobytes())
+    if key not in _MP_CACHE:
+        if len(_MP_CACHE) >= _MP_CACHE_MAX:
+            _MP_CACHE.pop(next(iter(_MP_CACHE)))
+        _MP_CACHE[key] = _minimum_phase(f, db)
+    return _MP_CACHE[key].copy()
+
+
+def _minimum_phase(f: np.ndarray, db: np.ndarray) -> np.ndarray:
     """Minimum phase (rad, e^{+jwt} convention) of the magnitude db(f).
 
     ln|H| is put on a uniform FFT grid whose Nyquist frequency lies _EXT_OCT octaves
