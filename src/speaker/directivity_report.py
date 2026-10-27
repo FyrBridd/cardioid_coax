@@ -191,7 +191,7 @@ def mesh_check(params_path: Path | None, out_dir: Path, *, f_max: float = 4000.0
     band = np.searchsorted(BAND_EDGES, f)
     if band.max() >= len(BAND_EDGES):
         raise ValueError(f"f_max {f_max:g} Hz is above the last band edge, {BAND_EDGES[-1]:g} Hz")
-    kw = dict(params_text=d.text, cache_dir=CACHE_DIR)
+    kw = dict(cache_dir=CACHE_DIR)
     coarse, refined, elements, capped = [], [], {}, False
     for b in np.unique(band):
         edge, fb = BAND_EDGES[b], f[band == b]
@@ -326,7 +326,7 @@ def run_directivity(params_path: Path | None, out_dir: Path, *, fast: bool = Fal
             fp = np.union1d(fp, [PUCK_HOLD_F])
     tl, tl_text = _trusted_limit(mc, cab_top=float(f_cab[-1]), f_top=float(f[-1]),
                                  puck_lo=None if fp is None else float(fp[0]))
-    kw = dict(params_text=d.text, per_wavelength=per_wavelength, cache_dir=CACHE_DIR)
+    kw = dict(per_wavelength=per_wavelength, cache_dir=CACHE_DIR)
     t0 = time.perf_counter()
     cab = _banded(lambda x: cabinet_field(d.p, d.coax, d.bass, x, h_max=h_max, **kw), f_cab, "cabinet")
     puck = None if fp is None else _banded(lambda x: puck_field(d.p, d.coax, x, **kw), fp, "puck")

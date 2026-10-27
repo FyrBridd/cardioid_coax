@@ -8,15 +8,18 @@ rings, listening-window extras and a sphere grid for power averages).
 Results are stored in the engineering e^{+jωt} convention: the complex conjugate of
 solve_band's e^{-iωt} output.
 
-The cache key covers the inputs, the mesh settings and code_version(): the source text of the
-speaker modules this file imports (directly or not) and the bempp-cl and gmsh versions.
+The cache key is built from the meshes themselves: every band's mesh is built first and its
+bytes (edge, h, vertices, triangles, tags, tag names) enter the key with the observation
+points, the frequencies, the mesh settings and code_version(). Geometry therefore enters only
+through the meshes, so a change to a parameter that moves no surface (a vent's resistance, the
+drive level, a chamber volume) is a cache hit. code_version() covers the solver only: the source
+of SOLVER_MODULES and the installed bempp-cl version.
 """
 from __future__ import annotations
 
-import ast
 import hashlib
+import importlib
 import importlib.metadata
-import importlib.util
 import json
 import os
 import sys
@@ -47,7 +50,7 @@ LW_EXTRA_EL = 10.0  # deg, listening-window extras at (LISTENER_AZ, ±el)
 FAR_R = 50.0  # m, distance of cabinet_field's far-field points on H 0° and H 180°
 CAB_H_COAX = 0.010  # m, default cabinet mesh size near the coax cavity
 CAB_H_VENT = 0.020  # m, default cabinet mesh size on the vents
-_BEM_DISTS = ("bempp-cl", "gmsh")  # installed packages whose versions enter the cache key
+SOLVER_MODULES = ("speaker.bem.run", "speaker.bem.solver", "speaker.constants")  # source that enters code_version()
 
 
 def freq_grid(f_lo: float = 50.0, f_hi: float = 20000.0, ppo: int = 12) -> np.ndarray:
@@ -139,7 +142,6 @@ def cabinet_field(
     bass: Driver,
     f: np.ndarray,
     *,
-    params_text: str,
     per_wavelength: float = 6.0,
     h_max: float = 0.05,
     h_coax: float = CAB_H_COAX,
@@ -158,7 +160,7 @@ def cabinet_field(
     pr, names, meta = _banded_field(
         "cabinet_field",
         lambda edge, h: cabinet_mesh(p, coax, bass, h=h, h_coax=h_coax, h_vent=h_vent),
-        f, points, (params_text, repr(p), repr(coax), repr(bass), repr(float(h_coax)), repr(float(h_vent))),
+        f, points,
         per_wavelength=per_wavelength, h_max=h_max, cache_dir=cache_dir,
     )
     return SourceField(np.asarray(f, dtype=float), names, obs, pr[..., :-2], {**meta, "far_h0_h180": pr[..., -2:]})
@@ -169,7 +171,6 @@ def puck_field(
     coax: Driver,
     f: np.ndarray,
     *,
-    params_text: str,
     per_wavelength: float = 6.0,
     cache_dir: Path | None = Path("out/cache/bem"),
 ) -> SourceField:
@@ -193,7 +194,7 @@ def puck_field(
         return puck_mesh(p, coax, h=h, h_coax=h_coax)
 
     pr, names, meta = _banded_field(
-        "puck_field", build, f, points, (params_text, repr(p), repr(coax)),
+        "puck_field", build, f, points,
         per_wavelength=per_wavelength, h_max=PUCK_H_MAX, cache_dir=cache_dir,
     )
     return SourceField(f, names, obs, pr[..., :-1], {**meta, "axis_1m": pr[..., -1]})
@@ -204,7 +205,6 @@ def _banded_field(
     build: Callable[[float, float], SurfaceMesh],
     f: np.ndarray,
     points: np.ndarray,
-    key_parts: Sequence[str],
     *,
     per_wavelength: float,
     h_max: float,
@@ -222,21 +222,24 @@ def _banded_field(
     if band.max() >= len(BAND_EDGES):
         raise ValueError(f"{f.max():g} Hz is above the last band edge, {BAND_EDGES[-1]:g} Hz")
 
+    meshes = []  # per band: (edge, h, selection, mesh, mesh seconds)
+    for b in np.unique(band):
+        edge = BAND_EDGES[b]
+        h = min(h_max, C / (edge * per_wavelength))
+        t0 = time.perf_counter()
+        mesh = build(edge, h)
+        meshes.append((edge, h, np.flatnonzero(band == b), mesh, time.perf_counter() - t0))
+
     path = None
     if cache_dir is not None:
-        key = _cache_key(kind, key_parts, f, points, per_wavelength, h_max)
+        key = _cache_key(kind, [(e, h, m) for e, h, _, m, _ in meshes], f, points, per_wavelength, h_max)
         path = Path(cache_dir) / f"{kind}_{key}.npz"
         if path.exists():
             with np.load(path, allow_pickle=False) as z:
                 return z["p"], tuple(str(n) for n in z["names"]), json.loads(str(z["meta"]))
 
     out, names, bands = None, None, []
-    for b in np.unique(band):
-        edge = BAND_EDGES[b]
-        h = min(h_max, C / (edge * per_wavelength))
-        sel = np.flatnonzero(band == b)
-        t0 = time.perf_counter()
-        mesh = build(edge, h)
+    for edge, h, sel, mesh, mesh_s in meshes:
         t1 = time.perf_counter()
         res = solve_band(mesh, f[sel], points)
         t2 = time.perf_counter()
@@ -249,7 +252,7 @@ def _banded_field(
         bands.append({
             "edge": edge, "h": h, "freqs": len(sel),
             "nodes": len(mesh.vertices), "triangles": len(mesh.triangles),
-            "mesh_s": t1 - t0, "solve_s": t2 - t1,
+            "mesh_s": mesh_s, "solve_s": t2 - t1,
         })
     meta = {"bands": bands}
 
@@ -263,48 +266,32 @@ def _banded_field(
 
 
 def _cache_key(
-    kind: str, key_parts: Sequence[str], f: np.ndarray, points: np.ndarray, per_wavelength: float, h_max: float
+    kind: str, meshes: Sequence[tuple[float, float, SurfaceMesh]], f: np.ndarray, points: np.ndarray,
+    per_wavelength: float, h_max: float,
 ) -> str:
-    """sha256 over everything the result depends on, including the code version."""
+    """sha256 over everything the result depends on: the meshes, the points, f and the code version."""
     h = hashlib.sha256()
-    for part in (kind, *key_parts, repr(float(per_wavelength)), repr(float(h_max)), code_version()):
+    for part in (kind, repr(float(per_wavelength)), repr(float(h_max)), code_version()):
         h.update(part.encode())
         h.update(b"\0")
     h.update(f.astype(np.float64).tobytes())
     h.update(points.astype(np.float64).tobytes())
+    for edge, size, mesh in meshes:
+        h.update(repr((float(edge), float(size))).encode() + b"\0")
+        h.update(np.ascontiguousarray(mesh.vertices, dtype=np.float64).tobytes())
+        h.update(np.ascontiguousarray(mesh.triangles, dtype=np.int64).tobytes())
+        h.update(np.ascontiguousarray(mesh.tags, dtype=np.int64).tobytes())
+        h.update(repr(tuple(mesh.tag_names)).encode() + b"\0")
     return h.hexdigest()
 
 
-def _imports(name: str) -> set[str]:
-    """speaker.* modules named by the import statements of module `name` (anywhere in its source)."""
-    mod = sys.modules[name]
-    pkg = name if hasattr(mod, "__path__") else name.rpartition(".")[0]
-    found = set()
-    for node in ast.walk(ast.parse(Path(mod.__file__).read_text())):
-        if isinstance(node, ast.Import):
-            found.update(a.name for a in node.names)
-        elif isinstance(node, ast.ImportFrom):
-            base = importlib.util.resolve_name("." * node.level + (node.module or ""), pkg) if node.level else node.module
-            found.add(base)
-            found.update(f"{base}.{a.name}" for a in node.names)  # `from pkg import module`
-    return {m for m in found if m.split(".")[0] == "speaker" and m in sys.modules}
-
-
 def code_version() -> str:
-    """sha256 over the source text of speaker.bem.run's import closure within speaker (with the
-    packages that contain it), sorted by module name, and the installed bempp-cl and gmsh versions."""
-    todo, seen = [__name__], set()
-    while todo:
-        name = todo.pop()
-        if name not in seen:
-            seen.add(name)
-            todo.extend(_imports(name))
-    for name in list(seen):
-        parts = name.split(".")
-        seen.update(".".join(parts[:i]) for i in range(1, len(parts)))
+    """sha256 over the source of SOLVER_MODULES (read from each module's current __file__) and the
+    installed bempp-cl version. Not memoised: it reads the files on every call."""
     h = hashlib.sha256()
-    for name in sorted(seen):
+    for name in SOLVER_MODULES:
+        if name not in sys.modules:
+            importlib.import_module(name)
         h.update(name.encode() + b"\0" + Path(sys.modules[name].__file__).read_bytes() + b"\0")
-    for dist in _BEM_DISTS:
-        h.update(f"{dist}=={importlib.metadata.version(dist)}\0".encode())
+    h.update(f"bempp-cl=={importlib.metadata.version('bempp-cl')}\0".encode())
     return h.hexdigest()

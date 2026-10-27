@@ -35,7 +35,7 @@ def _fake_cabinet_field(calls, hot=(1100.0, 1900.0), at=None, gain_db=3.0):
     from speaker.bem.run import BAND_EDGES, CAB_H_COAX, CAB_H_VENT, SourceField, observation_set
     from speaker.bem.mesh import CABINET_TAGS
 
-    def fake(p, coax, bass, f, *, params_text, per_wavelength, h_max, cache_dir,
+    def fake(p, coax, bass, f, *, per_wavelength, h_max, cache_dir,
              h_coax=CAB_H_COAX, h_vent=CAB_H_VENT):
         calls.append((per_wavelength, float(f[0]), float(f[-1]), h_max, h_coax, h_vent, tuple(f)))
         o = observation_set(2.0)
@@ -263,11 +263,11 @@ def _stub_fields(monkeypatch, puck_calls):
         band = {"edge": edge, "h": 0.05, "freqs": len(f), "nodes": 1, "triangles": 2, "mesh_s": 0.0, "solve_s": 0.0}
         return f, p, {"bands": [band]}
 
-    def cab(p, coax, bass, f, *, params_text, per_wavelength, h_max, cache_dir, h_coax=CAB_H_COAX, h_vent=CAB_H_VENT):
+    def cab(p, coax, bass, f, *, per_wavelength, h_max, cache_dir, h_coax=CAB_H_COAX, h_vent=CAB_H_VENT):
         f, pr, meta = make(f, CABINET_TAGS)
         return SourceField(f, CABINET_TAGS, o, pr, {**meta, "far_h0_h180": pr[:, :, [i0, i180]] * 2 / 50})
 
-    def puck(p, coax, f, *, params_text, per_wavelength, cache_dir):
+    def puck(p, coax, f, *, per_wavelength, cache_dir):
         puck_calls.append(np.asarray(f, float))
         f, pr, meta = make(f, PUCK_TAGS)
         ax = np.array([analytic.baffled_piston_on_axis(x, coax.hf_exit_d / 2, 1.0) for x in f]).conj()

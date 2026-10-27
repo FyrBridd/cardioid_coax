@@ -78,7 +78,7 @@ def test_bem_vent_sign_and_cabinet_shadowing(tmp_path):
     from speaker.bem.run import cabinet_field
     from speaker.params import DEFAULT_PATH
     f = np.array([150.0, 200.0])
-    cab = cabinet_field(P, CX, B, f, params_text=DEFAULT_PATH.read_text(), h_max=0.06, cache_dir=tmp_path)
+    cab = cabinet_field(P, CX, B, f, h_max=0.06, cache_dir=tmp_path)
     w = way_responses(P, CX, B, L, cab, None, f, trusted_limit=3000.0)
     o = w.obs
     front, back = o.h_idx[o.h_angles == 0][0], o.h_idx[o.h_angles == -180][0]
