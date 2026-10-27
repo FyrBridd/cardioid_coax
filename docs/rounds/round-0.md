@@ -198,6 +198,9 @@ checked 3D:
 This matters most for the 2–5 kHz presence check, which you care about. Its
 trusted part is already 72% puck.
 
+**Decided 2026-10-27:** none of the three. The fade now starts at the trusted
+limit and runs above it (2851–3805 Hz). See [round 0b](round-0b.md).
+
 ## Other things the plots show
 
 **Checks from the plan.**

@@ -466,12 +466,12 @@ def _html(d: _Design, *, fast, mc, mc_why, tl_text, scores, gains, xo, ways, ven
     if ways.meta["puck_blend"] is not None:
         lo, hi = ways.meta["puck_blend"]
         checked = float(mc["trusted_limit_hz"]) if mc else 0.0
-        verified = ("the mesh check verified the cabinet fields across it" if checked >= hi else
-                    f"the cabinet fields in it above {max(checked, lo):.0f} Hz are not mesh-checked")
+        verified = ("The mesh check verified the cabinet fields across the blend" if checked >= hi else
+                    f"The cabinet fields in the blend above {max(checked, lo):.0f} Hz are not mesh-checked")
         notes.append(f"<b>Cabinet-to-puck blend</b>: from {lo:.0f} Hz to {hi:.0f} Hz, above the trusted limit, the "
                      "coax LF and HF fields cross-fade from the cabinet BEM to the puck BEM (the coax on a round "
                      "cylinder, with no cabinet facets or edges), log-linear in frequency, and the vents fade "
-                     f"out; above it the puck alone. The trusted range is the cabinet BEM alone; {verified}. "
+                     f"out; above it the puck alone. The trusted range is the cabinet BEM alone. {verified}. "
                      "The range is hatched on the polar maps, spinorama and window family. Each score's "
                      "detail in scores.json gives puck_fraction (the share of its band's grid points with any "
                      "puck weight) and puck_mean_weight.")

@@ -148,7 +148,7 @@ def test_memory_cap_at_the_4k_fine_band_keeps_the_3k_band(tmp_path, monkeypatch)
     cab_top = float(g[g <= 4000.0][-1])
     assert f"{top3k:.0f} Hz to {cab_top:.0f} Hz" in page   # the puck blend sits above the verified limit
     assert "above the trusted limit" in page
-    assert f"the cabinet fields in it above {top3k:.0f} Hz are not mesh-checked" in page
+    assert f"The cabinet fields in the blend above {top3k:.0f} Hz are not mesh-checked" in page
     trusted = [s for s in json.loads((tmp_path / "scores.json").read_text()) if s["confidence"] == "trusted"]
     assert all(s["band"][1] <= top3k + 1e-6 for s in trusted)
 
