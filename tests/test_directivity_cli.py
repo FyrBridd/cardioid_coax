@@ -145,7 +145,9 @@ def test_memory_cap_at_the_4k_fine_band_keeps_the_3k_band(tmp_path, monkeypatch)
     _stub_fields(monkeypatch, [])   # the full run's fields (the mesh check's fake is replaced)
     page = dr.run_directivity(None, tmp_path).read_text()
     assert f"{top3k:.0f} Hz" in page and "unverified" not in page
-    assert f"{top3k / 2:.0f} Hz to {top3k:.0f} Hz" in page   # the puck blend sits below the verified limit
+    cab_top = float(g[g <= 4000.0][-1])
+    assert f"{top3k:.0f} Hz to {cab_top:.0f} Hz" in page   # the puck blend sits above the verified limit
+    assert "above the trusted limit" in page
     trusted = [s for s in json.loads((tmp_path / "scores.json").read_text()) if s["confidence"] == "trusted"]
     assert all(s["band"][1] <= top3k + 1e-6 for s in trusted)
 
@@ -184,14 +186,22 @@ def test_converged_mesh_check_feeds_a_usable_limit_to_the_run(tmp_path, monkeypa
     assert mc["trusted_limit_hz"] == pytest.approx(top)
     # The full run's cabinet grid is the same, so the limit fits inside it.
     f = dr._grid(dr.FULL_GRID)
-    tl, text = dr._trusted_limit(mc, cab_top=float(f[f <= 4000][-1]), f_top=float(f[-1]), puck_lo=500.0)
-    assert tl == pytest.approx(top) and "unverified" not in text
-    # An older check that reached past the cabinet field is capped at its top, and says so.
+    cab_top = float(f[f <= 4000][-1])
+    tl, text = dr._trusted_limit(mc, cab_top=cab_top, f_top=cab_top, puck_lo=None)
+    assert tl == pytest.approx(top) and "unverified" not in text and "capped" not in text
+    # With the puck, the cabinet field must reach 1/3 octave past the limit for the blend above it:
+    # a limit at the cabinet top is capped there, and says so.
+    tl, text = dr._trusted_limit(mc, cab_top=cab_top, f_top=float(f[-1]), puck_lo=500.0)
+    assert tl == pytest.approx(cab_top / 2 ** (1 / 3)) and "capped" in text and "blend" in text
+    # A limit with room for the blend is kept as it is.
+    tl, text = dr._trusted_limit({**mc, "trusted_limit_hz": 2850.9}, cab_top=cab_top, f_top=20000.0, puck_lo=500.0)
+    assert tl == 2850.9 and "capped" not in text
+    # An older check that reached past the cabinet field is capped too.
     tl, text = dr._trusted_limit({**mc, "trusted_limit_hz": 4489.8}, cab_top=top, f_top=20000.0, puck_lo=500.0)
-    assert tl == top and "capped" in text
-    # A limit too low for the puck blend (tl/2 >= the puck's lowest frequency) is an error, not a crash.
+    assert tl == pytest.approx(top / 2 ** (1 / 3)) and "capped" in text
+    # A limit below the puck's lowest frequency (where the blend starts) is an error, not a crash.
     with pytest.raises(ValueError, match="trusted 3D limit"):
-        dr._trusted_limit({**mc, "trusted_limit_hz": 1000.0}, cab_top=top, f_top=20000.0, puck_lo=503.97)
+        dr._trusted_limit({**mc, "trusted_limit_hz": 480.0}, cab_top=top, f_top=20000.0, puck_lo=503.97)
     assert dr._trusted_limit(None, cab_top=898.0, f_top=898.0, puck_lo=None) == (3000.0, "3000 Hz (unverified)")
 
 
@@ -284,11 +294,14 @@ def test_full_run_end_to_end_on_stub_fields(tmp_path, monkeypatch):
             ("cardioid_hard_far", "trusted"), ("window_spread", "low")} <= set(scores)
     assert scores[("cardioid_hard_far", "trusted")]["status"] == "info"
     assert 150.0 <= scores[("cardioid_hard", "trusted")]["detail"]["worst_hz"] <= 300.0
-    ws = scores[("window_spread", "trusted")]["detail"]
-    assert 0 < ws["puck_fraction"] < 1 and 0 < ws["puck_mean_weight"] < ws["puck_fraction"]
+    # The trusted range is the cabinet alone; the blend sits in the low-confidence range above it.
+    ws, ws_low = scores[("window_spread", "trusted")], scores[("window_spread", "low")]
+    assert ws["detail"]["puck_fraction"] == 0.0 and ws["detail"]["puck_mean_weight"] == 0.0
+    assert ws_low["detail"]["puck_fraction"] == 1.0 and 0 < ws_low["detail"]["puck_mean_weight"] < 1
     assert scores[("cardioid_hard", "trusted")]["detail"]["puck_fraction"] == 0.0
     # Confidence notes: the blend (I3), the far field (I5), de-embedding and estimated volumes (I6).
-    assert f"{tl / 2:.0f} Hz to {tl:.0f} Hz" in page and "round cylinder" in page
+    run_tl = ws["band"][1]
+    assert f"{run_tl:.0f} Hz to " in page and "above the trusted limit" in page and "round cylinder" in page
     assert "The gate is scored at 2 m (spec §4); far field is shown for reference." in page
     assert "infinite-baffle piston" in page and "double-count" in page and "puck's on-axis response" in page
     assert "filler volumes" in page and "§7.1.1" in page

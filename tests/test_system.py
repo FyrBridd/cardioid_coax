@@ -35,9 +35,10 @@ def test_blend_moves_monotonically_from_cabinet_to_puck():
     w1 = way_responses(P, CX, B, L, cab, puck, F, trusted_limit=3000.0)
     i0 = w0.obs.h_idx[w0.obs.h_angles == 0][0]
     d = 20 * np.log10(np.abs(w1.ways["coax_hf"][:, i0]) / np.abs(w0.ways["coax_hf"][:, i0]))
-    assert np.allclose(d[F < 1500], 0, atol=0.01) and np.allclose(d[(F > 3000) & (F < 12000)], 6.02, atol=0.05)
-    m = (F >= 1500) & (F <= 3000)
-    assert np.all(np.diff(d[m]) >= -1e-9)
+    # The trusted range is the cabinet alone; the blend runs an octave above the limit.
+    assert np.all(d[F <= 3000] == 0) and np.allclose(d[(F > 6000) & (F < 12000)], 6.02, atol=0.05)
+    m = (F >= 3000) & (F <= 6000)
+    assert np.all(np.diff(d[m]) >= -1e-9) and 0.5 < d[m][len(d[m]) // 2] < 5.5
     assert np.all(w1.ways["bass"][F > 3000] == 0)
 
 def test_lf_join_mismatch_reported():
@@ -57,8 +58,8 @@ def test_hold_anchors_on_12k_when_the_grid_contains_it():
 def test_cab_to_puck_blend_phase_is_continuous_through_pi():
     f = np.geomspace(100, 16000, 400)   # ~54 points per octave: the smooth blend moves < 4° per step
     cab = _piston_field(f)
-    # The puck leads the cabinet by a phase that crosses pi inside the 1.5-3 kHz blend band.
-    ramp = np.clip(np.log(f / 1500.0) / np.log(2.0), 0.0, 1.0)
+    # The puck leads the cabinet by a phase that crosses pi inside the 3-6 kHz blend band.
+    ramp = np.clip(np.log(f / 3000.0) / np.log(2.0), 0.0, 1.0)
     puck = _piston_field(f)
     puck.p[:] *= np.exp(1j * np.pi * (0.8 + 0.4 * ramp))[:, None, None]
     w0 = way_responses(P, CX, B, L, cab, cab, f, trusted_limit=3000.0)
@@ -112,16 +113,19 @@ def test_vent_scaled_section_keeps_the_cone_and_rescales_the_vents():
     s = 1.3
     got = vent_scaled_section(w, fld, CX, cp, s)
     # Oracle: a full way_responses at R x s, with its coax LF strength swapped back to the nominal one.
-    # The vents follow the lumped ratio at every frequency the cabinet field covers (f <= tl).
+    # The vents follow the lumped ratio wherever the cabinet field is used: up to the top of the
+    # cabinet-to-puck blend, fading out across it as the puck (which has no vents) takes over.
     p_alt = dataclasses.replace(P, vents=dataclasses.replace(P.vents, specific_resistance=P.vents.specific_resistance * s))
     w_alt = way_responses(p_alt, CX, B, L, fld, fld, F, trusted_limit=tl)
-    m = F <= tl
+    lo, hi = w.meta["puck_blend"]
+    m = F < hi
     n = int(m.sum())
     u_nom, u_alt = w.meta["u_lf"][:n], w_alt.meta["u_lf"][:n]
     assert np.allclose(got[m], coax_section(w_alt)[m] * (u_nom / u_alt)[:, None], rtol=1e-9)
     j = (F > 500) & m   # datasheet strength above the join: the oracle needs no swap there
     assert np.allclose(u_nom[j[:n]], u_alt[j[:n]]) and not np.allclose(got[j], coax_section(w)[j])
     assert not np.allclose(got[F <= LF_JOIN[0]], coax_section(w)[F <= LF_JOIN[0]])
+    assert not np.allclose(got[(F > tl) & m], coax_section(w)[(F > tl) & m])   # vents still there above tl
     assert np.array_equal(got[~m], coax_section(w)[~m])
 
 
@@ -146,6 +150,19 @@ def test_far_pair_is_composed_like_the_coax_section():
 
 def test_puck_blend_range_in_meta():
     fld = _piston_field(F)
-    assert way_responses(P, CX, B, L, fld, fld, F, trusted_limit=3000.0).meta["puck_blend"] == (1500.0, 3000.0)
+    # The blend starts at the trusted limit and runs up to an octave above it ...
+    assert way_responses(P, CX, B, L, fld, fld, F, trusted_limit=3000.0).meta["puck_blend"] == (3000.0, 6000.0)
+    # ... or to the top of the cabinet field when that comes first.
+    f4 = F[F <= 4000.0]
+    cab4 = SourceField(f4, fld.names, fld.obs, fld.p[: len(f4)], {"axis_1m": fld.meta["axis_1m"][: len(f4)]})
+    assert way_responses(P, CX, B, L, cab4, fld, F, trusted_limit=3000.0).meta["puck_blend"] == (3000.0, f4[-1])
     f = F[F <= 3000.0]
     assert way_responses(P, CX, B, L, fld, None, f, trusted_limit=3000.0).meta["puck_blend"] is None
+
+
+def test_puck_blend_narrower_than_a_third_octave_is_refused():
+    fld = _piston_field(F)
+    f32 = F[F <= 3200.0]
+    cab = SourceField(f32, fld.names, fld.obs, fld.p[: len(f32)], {"axis_1m": fld.meta["axis_1m"][: len(f32)]})
+    with pytest.raises(ValueError, match="blend"):
+        way_responses(P, CX, B, L, cab, fld, F, trusted_limit=3000.0)

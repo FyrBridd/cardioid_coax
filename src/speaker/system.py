@@ -7,10 +7,12 @@ volume velocities directly, and the lumped RMS volume velocities are scaled by �
 Coax LF volume velocity is the lumped cardioid model below LF_JOIN, the datasheet
 (de-embedded with a baffled piston, minimum phase) above it, blended across it. Coax HF
 is the datasheet de-embedded with the smoothed on-axis puck response. Fields are the
-cabinet BEM up to trusted_limit/2, blended into the puck BEM up to trusted_limit, then
-the puck alone; above PUCK_HOLD_F each direction keeps its 12 kHz level relative to the
-datasheet on-axis level. When the cabinet field carries far-field points (meta["far_h0_h180"]),
-the coax section is also composed there, up to the trusted limit.
+cabinet BEM alone up to trusted_limit, then blended into the puck BEM up to an octave
+above it (or the top of the cabinet field, at least BLEND_MIN_OCT), then the puck alone;
+the vents fade out across the blend, since the puck has none. Above PUCK_HOLD_F each
+direction keeps its 12 kHz level relative to the datasheet on-axis level. When the cabinet
+field carries far-field points (meta["far_h0_h180"]), the coax section is also composed
+there, up to the trusted limit.
 """
 from __future__ import annotations
 
@@ -30,6 +32,7 @@ from speaker.params import Params
 
 LF_JOIN = (300.0, 500.0)  # Hz, lumped -> datasheet blend for the coax LF volume velocity
 PUCK_HOLD_F = 12000.0  # Hz, top of the puck field; directivity is held above it
+BLEND_MIN_OCT = 1 / 3  # octaves, narrowest cabinet -> puck blend above the trusted limit
 REF_SMOOTH = 1 / 3  # octaves, smoothing of the puck's on-axis reference
 V_DRIVE = 2.83  # V RMS
 P_PEAK_REF = 20e-6 * np.sqrt(2)  # Pa peak at 0 dB SPL
@@ -45,7 +48,7 @@ class Ways:
     obs: Observation
     ways: dict[str, np.ndarray]  # "bass", "coax_lf", "coax_hf": (nf, nd) complex peak Pa
     # lf_join_mismatch_db, trusted_limit, hf_reference; u_lf: coax LF peak volume velocity up to the hold;
-    # puck_blend: (lo, hi) Hz of the cabinet -> puck crossfade, None without a puck;
+    # puck_blend: (lo, hi) Hz of the cabinet -> puck crossfade (lo = trusted limit), None without a puck;
     # coax_far_h0_h180: (nf, 2) coax section at FAR_R on H 0° and 180°, NaN above the trusted
     # limit, None when the cabinet field has no far-field points
     meta: dict
@@ -63,11 +66,13 @@ def vent_scaled_section(
 
     Each vent's strength is the lumped u_vent/u_cone ratio times the coax LF strength u_lf
     (ways.meta["u_lf"]) at every frequency; u_lf stays as it is and only the ratio is taken at the
-    scaled resistance, on the same cabinet vent fields. The vents radiate only up to the trusted
-    limit (the cabinet field), so above it the section is unchanged.
+    scaled resistance, on the same cabinet vent fields, with the same fade across the
+    cabinet-to-puck blend. Above the cabinet field (the trusted limit, or the blend's top) the
+    section is unchanged.
     """
     f = ways.f
-    m = f <= ways.meta["trusted_limit"]
+    fade = _vent_fade(f, ways.meta["trusted_limit"], ways.meta["puck_blend"])
+    m = fade > 0
     out = coax_section(ways).copy()
     if scale == 1.0 or not m.any():
         return out
@@ -76,8 +81,15 @@ def vent_scaled_section(
     u_lf = ways.meta["u_lf"][: int(m.sum())]  # on way_responses' internal grid, equal to f up to the hold
     d_vent = (alt.u_vent / alt.u_cone - nom.u_vent / nom.u_cone) * u_lf / 2
     vents = _field(cab, "vent_left", f[m]) + _field(cab, "vent_right", f[m])
-    out[m] += d_vent[:, None] * vents
+    out[m] += (fade[m] * d_vent)[:, None] * vents
     return out
+
+
+def _vent_fade(f: np.ndarray, tl: float, blend: tuple[float, float] | None) -> np.ndarray:
+    """Weight of the cabinet vent fields: 1 up to tl, fading to 0 across the puck blend."""
+    if blend is None or blend[1] <= blend[0]:
+        return (f <= tl).astype(float)
+    return np.where(f < blend[1], 1.0 - _log_ramp(f, *blend), 0.0)
 
 
 def _lerp_log(fs: np.ndarray, y: np.ndarray, ft: np.ndarray) -> np.ndarray:
@@ -157,11 +169,16 @@ def way_responses(
     if not _covers(cab, f[0], min(f[-1], tl)):
         raise ValueError(f"cabinet field covers {cab.f[0]:g}-{cab.f[-1]:g} Hz, "
                          f"need {f[0]:g}-{min(f[-1], tl):g} Hz")
+    blend = None
     if puck is None:
         if f[-1] > tl:
             raise ValueError(f"without a puck field f must stop at trusted_limit, {tl:g} Hz")
     else:
-        need = (tl / 2, min(f[-1], PUCK_HOLD_F))
+        blend = (tl, float(min(2 * tl, cab.f[-1])))
+        if f[-1] > tl and np.log2(blend[1] / tl) < BLEND_MIN_OCT - 1e-9:
+            raise ValueError(f"cabinet field stops at {cab.f[-1]:g} Hz: the cabinet-to-puck blend above the "
+                             f"trusted limit {tl:g} Hz needs it to reach {tl * 2 ** BLEND_MIN_OCT:g} Hz")
+        need = (tl, min(f[-1], PUCK_HOLD_F))
         if need[0] <= need[1] and not _covers(puck, *need):
             raise ValueError(f"puck field covers {puck.f[0]:g}-{puck.f[-1]:g} Hz, "
                              f"need {need[0]:g}-{need[1]:g} Hz")
@@ -208,22 +225,24 @@ def way_responses(
     lump400 = np.sqrt(2) * simulate(coax, cp, at, V_DRIVE).u_cone
     mismatch = float(20 * np.log10(np.abs(lump400[0]) / np.abs(datasheet_u("lf", at)[0])))
 
-    # Fields on fi: cabinet below tl, puck above tl/2 for the coax sources.
-    def cab_on(name: str, x: np.ndarray) -> np.ndarray:
+    # Fields on fi: cabinet alone up to tl; for the coax sources, cabinet -> puck across the blend.
+    def cab_on(name: str, x: np.ndarray, top: float = tl) -> np.ndarray:
         out = np.zeros((len(x), len(cab.obs.dirs)), dtype=complex)
-        m = x <= tl
+        m = x <= top
         out[m] = _field(cab, name, x[m])
         return out
 
     def coax_on(name: str) -> np.ndarray:
-        if puck is None:
+        if blend is None:
             return cab_on(name, fi)
-        out = cab_on(name, fi)
-        m = fi > tl / 2
-        out[m] = _blend(out[m], _field(puck, name, fi[m]), _log_ramp(fi[m], tl / 2, tl))
+        out = cab_on(name, fi, blend[1])
+        m = fi > tl
+        out[m] = _blend(out[m], _field(puck, name, fi[m]), _log_ramp(fi[m], *blend))
         return out
 
-    vents = cab_on("vent_left", fi) + cab_on("vent_right", fi)
+    fade = _vent_fade(fi, tl, blend)
+    top = tl if blend is None else blend[1]
+    vents = fade[:, None] * (cab_on("vent_left", fi, top) + cab_on("vent_right", fi, top))
     lf_i = u_lf[:, None] * coax_on("coax_lf") + u_vent[:, None] * vents
 
     # Coax section at the far-field points, from the cabinet field alone (the puck has none).
@@ -260,5 +279,5 @@ def way_responses(
         ways={"bass": bass_way, "coax_lf": extend(lf_i, "lf"), "coax_hf": extend(hf_i, "hf")},
         meta={"lf_join_mismatch_db": mismatch, "trusted_limit": tl, "u_lf": u_lf,
               "hf_reference": "puck" if puck is not None else "piston",
-              "puck_blend": (tl / 2, tl) if puck is not None else None, "coax_far_h0_h180": far},
+              "puck_blend": blend, "coax_far_h0_h180": far},
     )
