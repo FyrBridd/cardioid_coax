@@ -5,8 +5,9 @@ rest are ordered ascending on
 
     (floor((window_spread + presence_lift) / 0.25), di_smooth_bass + di_smooth_lfhf, flat23)
 
-If every ok variant fails the gate, gate_unmet is set and all of them are ranked, by cardioid_hard
-(descending) and then by that key, so the round still has an order.
+If every ok variant other than round0 (a reference, not a candidate) fails the gate, gate_unmet is
+set and all ok variants, round0 included, are ranked by cardioid_hard (descending) and then by that
+key, so the round still has an order and a best to carry on.
 """
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ from typing import Literal
 
 DIRECTIVITY_KEYS = ("cardioid_hard", "window_spread", "presence_lift", "di_smooth_bass", "di_smooth_lfhf", "flat23")
 BUCKET_DB = 0.25
+REFERENCE = "round0"  # ranked for comparison, but never a stage's best
 
 
 @dataclass
@@ -101,12 +103,14 @@ def rank(results: list[VariantResult], rank_by: str) -> Ranking:
             continue
         rows.append((r.name, {k: float(s["value"]) for k, s in found.items()},
                      found["cardioid_hard"]["status"] != "fail"))
-    passing = [x for x in rows if x[2]]
-    if passing or not rows:
-        for name, v, passes in rows:
-            if not passes:
-                out[name] = f"fails the hard cardioid gate ({v['cardioid_hard']:.1f} dB)"
-        passing.sort(key=lambda x: _directivity_key(x[1]))
-        return Ranking([n for n, _, _ in passing], out, False)
-    rows.sort(key=lambda x: (-x[1]["cardioid_hard"], *_directivity_key(x[1])))
-    return Ranking([n for n, _, _ in rows], out, True)
+    # round0 is a reference, not a candidate: the candidates alone decide whether the gate is unmet,
+    # and the resulting rule then applies to every row, round0 included.
+    candidates = [x for x in rows if x[0] != REFERENCE]
+    if candidates and not any(passes for _, _, passes in candidates):
+        rows.sort(key=lambda x: (-x[1]["cardioid_hard"], *_directivity_key(x[1])))
+        return Ranking([n for n, _, _ in rows], out, True)
+    for name, v, passes in rows:
+        if not passes:
+            out[name] = f"fails the hard cardioid gate ({v['cardioid_hard']:.1f} dB)"
+    passing = sorted((x for x in rows if x[2]), key=lambda x: _directivity_key(x[1]))
+    return Ranking([n for n, _, _ in passing], out, False)

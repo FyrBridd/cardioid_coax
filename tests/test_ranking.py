@@ -87,3 +87,18 @@ def test_rank_cardioid_by_tuned_or_base_margin():
 def test_rank_cardioid_ignores_the_gate():
     r = rank([res("a", hard=5.0, margin=-5.0), res("b", hard=6.0, margin=-4.0)], "cardioid")
     assert r.order == ["b", "a"] and not r.gate_unmet
+
+
+def test_rank_round0_alone_passing_does_not_block():
+    from speaker.round import _best
+    rows = [res("stage-base", hard=8.0), res("round0", hard=12.0), res("a", hard=9.0), res("b", hard=7.0)]
+    r = rank(rows, "directivity")
+    assert r.gate_unmet and r.out == {}
+    assert r.order == ["round0", "a", "stage-base", "b"]
+    assert _best(r) == "a"
+
+
+def test_rank_round0_failing_alone_is_out():
+    r = rank([res("stage-base", hard=12.0), res("round0", hard=8.0)], "directivity")
+    assert not r.gate_unmet and r.order == ["stage-base"]
+    assert r.out == {"round0": "fails the hard cardioid gate (8.0 dB)"}

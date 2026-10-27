@@ -11,7 +11,8 @@ Layout of out_dir (default out/rounds/<number>):
     finals.json                         the finals in rank order
     results.json                        every stage's results and ranking, the finals, the spec and its sha256
 
-A result.json is reused when its params_sha256, settings and code_version match, so a killed round
+A result.json is reused when its params_sha256, settings and code_version match (an "error" result is
+always retried, as its cause may be transient), so a killed round
 resumes where it stopped; a partial write only ever leaves a result.json.<pid>.tmp, which is never read.
 """
 from __future__ import annotations
@@ -29,7 +30,7 @@ from pathlib import Path
 from .bem.run import code_version
 from .directivity_report import _jsonable, run_directivity
 from .evaluate import SETTINGS, evaluate
-from .ranking import Ranking, VariantResult, rank
+from .ranking import REFERENCE, Ranking, VariantResult, rank
 from .variants import REPO, RoundSpec, StageSpec, apply_overrides, load_round, read_raw, with_tuned, write_params
 
 TRACEBACK_LINES = 20
@@ -83,6 +84,7 @@ def _run_variant(vdir: Path, stage: StageSpec, name: str, overrides: dict, raw: 
     sha = _sha256(params)
     prev = _load_result(vdir / "result.json")
     if (prev is not None and (prev.params_sha256, prev.settings, prev.code_version) == (sha, stage.settings, cv)
+            and prev.status != "error"  # errors may be transient (memory, OpenCL): retry them
             and (prev.status != "ok" or (vdir / "params_tuned.toml").exists())):
         return prev, True
 
@@ -111,7 +113,7 @@ def _run_variant(vdir: Path, stage: StageSpec, name: str, overrides: dict, raw: 
 
 
 def _best(ranking: Ranking) -> str | None:
-    return next((n for n in ranking.order if n != "round0"), None)
+    return next((n for n in ranking.order if n != REFERENCE), None)
 
 
 def _final(out_dir: Path, stage: str, k: int, name: str, spec: RoundSpec) -> dict:

@@ -56,7 +56,7 @@ def fake_eval(monkeypatch):
     margin peaks at 190 mm from the front. Shape stage: window_spread grows with the flare mouth, and a
     270 mm mouth fails the hard gate. Variant directories named in `fail` raise a RuntimeError.
     """
-    st = SimpleNamespace(calls=[], finals=[], fail=set())
+    st = SimpleNamespace(calls=[], finals=[], fail=set(), gate_on_vents=False)
 
     def evaluate(path, settings, *, trusted_limit, tune, cache_dir=None):
         path = Path(path)
@@ -68,6 +68,8 @@ def fake_eval(monkeypatch):
         margin = -abs(cff - 0.19) * 100.0
         r, v = fake_tune_of(cff)
         hard = 8.0 if mouth < 0.275 else 12.0
+        if st.gate_on_vents:  # only the base file's own vent position passes the gate
+            hard = 12.0 if abs(cff - 0.270) < 1e-9 else 8.0
         vals = {"cardioid_hard": hard, "cardioid_aim": 8.0, "window_spread": (mouth - 0.26) * 100.0,
                 "presence_lift": 0.0, "di_smooth_bass": 1.0, "di_smooth_lfhf": 1.0, "flat23": 1.0}
         scores = [Score(k, k, x, "dB", ("pass" if x >= 10 else "fail") if k == "cardioid_hard" else "pass",
@@ -277,3 +279,34 @@ def test_round_reruns_an_ok_result_without_its_tuned_params(tmp_path, fake_eval)
     fake_eval.calls.clear()
     run_round(spec(tmp_path), out)
     assert fake_eval.calls == [("vents", WINNER, "vents", True)]
+
+
+def test_rank_round0_alone_passing_does_not_block(tmp_path, fake_eval):
+    fake_eval.gate_on_vents = True  # in the shape stage only round0 (base vents) passes the gate
+    out = tmp_path / "out"
+    run_round(spec(tmp_path), out)
+    ranking = json.loads((out / "shape" / "ranking.json").read_text())
+    assert ranking["gate_unmet"] and ranking["out"] == {}
+    assert ranking["order"] == ["round0", "m270", "m280", "stage-base"]  # all at 8 dB: then by the key
+    assert [f["name"] for f in json.loads((out / "finals.json").read_text())] == ["m270", "m280"]
+
+
+def test_round_retries_error_results(tmp_path, fake_eval):
+    fake_eval.fail = {"m280"}
+    out = tmp_path / "out"
+    run_round(spec(tmp_path), out)
+    assert result(out, "shape", "m280")["status"] == "error"
+    fake_eval.fail = set()
+    fake_eval.calls.clear()
+    run_round(spec(tmp_path), out)
+    assert fake_eval.calls == [("shape", "m280", "screen", True)]
+    assert result(out, "shape", "m280")["status"] == "ok"
+
+
+def test_round_reuses_rejected_results(tmp_path, fake_eval):
+    text = ROUND + '[[stage.variant]]\nname = "m400"\nset = { "cabinet.flare_mouth_d_mm" = 400 }\n'
+    out = tmp_path / "out"
+    run_round(spec(tmp_path, text), out)
+    fake_eval.calls.clear()
+    run_round(spec(tmp_path, text), out)
+    assert fake_eval.calls == []
