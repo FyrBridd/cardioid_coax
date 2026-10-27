@@ -16,8 +16,6 @@ import math
 import subprocess
 import sys
 import time
-from collections.abc import Callable
-from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -25,27 +23,25 @@ import numpy as np
 from . import directivity_plots as plots
 from .bem import run as bem_run
 from .bem.mesh import cabinet_mesh
-from .bem.run import (BAND_EDGES, CAB_H_COAX, CAB_H_VENT, PUCK_F_RANGE, SourceField, cabinet_field, freq_grid,
-                      puck_field, recess_ratio)
+from .bem.run import (BAND_EDGES, CAB_H_COAX, CAB_H_VENT, PUCK_F_RANGE, SourceField, cabinet_field, puck_field,
+                      recess_ratio)
 from .bem.solver import BEM_MEMORY_BUDGET, estimate_bytes
 from .cardioid import front_back, simulate
 from .constants import C
-from .crossover import MATCH_BANDS, FixedCrossover, apply_crossover
-from .curves import interp_db, load_curve, smooth
-from .drivers import Driver, load_driver
-from .layout import Layout, cardioid_params, compute_layout
-from .params import DEFAULT_PATH, Params, load_params
+from .crossover import MATCH_BANDS, FixedCrossover
+from .curves import smooth
+from .drivers import Driver
+from .evaluate import CACHE_DIR, Design, banded, concat, grid, load_design, responses, ways_scores
+from .layout import cardioid_params
+from .params import Params
 from .report import FB_AIM_BAND, FB_BAND
 from .scores import LW_RING, REAR_H, ROLL_ANGLES, Score, score_all
-from .spinorama import P_REF_PEAK, Spin, spinorama
-from .system import (BLEND_MIN_OCT, COAX_CURVES, PUCK_HOLD_F, V_DRIVE, Ways, coax_section, recess_db,
-                     vent_scaled_section, way_responses)
+from .spinorama import P_REF_PEAK
+from .system import BLEND_MIN_OCT, PUCK_HOLD_F, V_DRIVE, coax_section, recess_db, vent_scaled_section
 
-CACHE_DIR = Path("out/cache/bem")
 CAB_H_MAX = 0.05  # m, cabinet mesh size cap of the full run and the mesh check
 FULL_GRID = (50.0, 20000.0, 12)  # f_lo, f_hi, points per octave
 FAST_GRID = (50.0, 1000.0, 6)
-SCORE_EDGES = (150.0, 300.0, 500.0, 2000.0, 5000.0)  # Hz, score band edges added to the output grids
 FAST_H_MAX = 0.08  # m
 COARSE = 6.0  # elements per wavelength of the run the mesh check verifies
 FINE = 8.0  # elements per wavelength of the mesh check's finer run; all mesh sizes scale by COARSE / FINE
@@ -57,69 +53,8 @@ LUMPED_DIFF_DB = 3.0  # report both cardioid models where they differ by more
 _REPO = Path(__file__).resolve().parents[2]
 
 
-@dataclass
-class _Design:
-    path: Path
-    text: str
-    p: Params
-    coax: Driver
-    bass: Driver
-    layout: Layout
-
-
-def _grid(spec: tuple[float, float, int]) -> np.ndarray:
-    """freq_grid(*spec) with the score band edges inside its range added."""
-    g = freq_grid(*spec)
-    return np.union1d(g, [e for e in SCORE_EDGES if g[0] <= e <= g[-1]])
-
-
-def _params_sha(d: _Design) -> str:
+def _params_sha(d: Design) -> str:
     return hashlib.sha256(d.path.read_bytes()).hexdigest()
-
-
-def _design(params_path: Path | None) -> _Design:
-    path = DEFAULT_PATH if params_path is None else Path(params_path)
-    p = load_params(path)
-    coax, bass = load_driver(p.coax), load_driver(p.bass)
-    return _Design(path, path.read_text(), p, coax, bass, compute_layout(p, coax, bass))
-
-
-def _concat(parts: list[SourceField]) -> SourceField:
-    """Join per-band fields along frequency; meta["bands"] lists every band, array metas are joined."""
-    first = parts[0]
-    meta = {k: np.concatenate([x.meta[k] for x in parts]) for k in first.meta if k != "bands"}
-    meta["bands"] = [b for x in parts for b in x.meta["bands"]]
-    return SourceField(np.concatenate([x.f for x in parts]), first.names, first.obs,
-                       np.concatenate([x.p for x in parts]), meta)
-
-
-def _banded(solve: Callable[[np.ndarray], SourceField], f: np.ndarray, label: str) -> SourceField:
-    """solve() once per BEM band of f, one progress line per band on stderr."""
-    band = np.searchsorted(BAND_EDGES, f)
-    parts = []
-    for b in np.unique(band):
-        t0 = time.perf_counter()
-        parts.append(solve(f[band == b]))
-        m = parts[-1].meta["bands"][0]
-        print(f"{label}: band <= {BAND_EDGES[b]:g} Hz, {m['triangles']} elements, "
-              f"{time.perf_counter() - t0:.1f} s", file=sys.stderr, flush=True)
-    return _concat(parts)
-
-
-def _datasheet_fallback() -> dict[str, float]:
-    """coax_hf gain from the datasheet on-axis curves (LF over its matching band minus HF over
-    its own), used only when the grid stops below the HF matching band."""
-    def mean_db(way: str, band: tuple[float, float]) -> float:
-        return float(np.mean(interp_db(load_curve(f"{COAX_CURVES}_{way}_spl"), np.geomspace(*band, 64))))
-    return {"coax_hf": mean_db("lf", MATCH_BANDS["coax_lf"]) - mean_db("hf", MATCH_BANDS["coax_hf"])}
-
-
-def _evaluate(d: _Design, cab: SourceField, puck: SourceField | None, f: np.ndarray, tl: float,
-              xo: FixedCrossover, lf_recess: tuple[np.ndarray, np.ndarray] | None = None,
-              ) -> tuple[Ways, np.ndarray, dict[str, float], Spin]:
-    ways = way_responses(d.p, d.coax, d.bass, d.layout, cab, puck, f, trusted_limit=tl, lf_recess=lf_recess)
-    total, gains = apply_crossover(ways, xo, fallback_db=_datasheet_fallback())
-    return ways, total, gains, spinorama(total, ways.obs, f=f)
 
 
 def _spl(p: np.ndarray) -> np.ndarray:
@@ -163,9 +98,9 @@ _COMPARED = ("the 23° curve, listening window, early reflections and sound powe
              "the crossover) over 150-500 Hz")
 
 
-def _check_curves(d: _Design, fld: SourceField) -> np.ndarray:
+def _check_curves(d: Design, fld: SourceField) -> np.ndarray:
     """(n_curves, nf) dB curves the mesh check compares; NaN where a curve is not compared."""
-    ways, total, _, spin = _evaluate(d, fld, None, fld.f, float(fld.f[-1]), FixedCrossover())
+    ways, total, _, spin = responses(d, fld, None, fld.f, float(fld.f[-1]), FixedCrossover())
     obs, lv = fld.obs, _spl(total)
     sec = _spl(coax_section(ways))
     out_rej = (fld.f < REJ_BAND[0]) | (fld.f > REJ_BAND[1])
@@ -186,8 +121,8 @@ def mesh_check(params_path: Path | None, out_dir: Path, *, f_max: float = 4000.0
     frequency. A fine mesh over BEM_MEMORY_BUDGET stops the check at that band. If no band
     converges, the JSON is still written and ValueError is raised.
     """
-    d = _design(params_path)
-    g = _grid(FULL_GRID)
+    d = load_design(params_path)
+    g = grid(*FULL_GRID)
     f = g[g <= f_max]
     band = np.searchsorted(BAND_EDGES, f)
     if band.max() >= len(BAND_EDGES):
@@ -216,7 +151,7 @@ def mesh_check(params_path: Path | None, out_dir: Path, *, f_max: float = 4000.0
     if not coarse:
         raise ValueError("mesh check: the first band's fine mesh is over the memory budget")
 
-    fc, fr = _concat(coarse), _concat(refined)
+    fc, fr = concat(coarse), concat(refined)
     dev = np.nanmax(np.abs(_check_curves(d, fc) - _check_curves(d, fr)), axis=0)
     k = np.floor(3 * np.log2(fc.f / 1000.0) + 0.5).astype(int)  # nominal 1/3-octave band index
     band_dev, limit, ok = {}, 0.0, True
@@ -269,7 +204,7 @@ def _trusted_value(scores: list[Score], key: str) -> float:
     return next(s.value for s in scores if s.key == key and s.confidence == "trusted")
 
 
-def _usable_mesh_check(mc: dict | None, d: _Design, *, h_max: float, per_wavelength: float) -> tuple[dict | None, str]:
+def _usable_mesh_check(mc: dict | None, d: Design, *, h_max: float, per_wavelength: float) -> tuple[dict | None, str]:
     """mc if it was made for this run (params, code version, mesh densities, h_max), else (None, why not)."""
     if mc is None:
         return None, "no mesh check in this output directory (run with --mesh-check)"
@@ -282,16 +217,21 @@ def _usable_mesh_check(mc: dict | None, d: _Design, *, h_max: float, per_wavelen
     return mc, ""
 
 
-def _trusted_limit(mc: dict | None, *, cab_top: float, f_top: float, puck_lo: float | None) -> tuple[float, str]:
-    """The trusted limit and its header text, from the mesh check or UNVERIFIED_LIMIT.
+def _trusted_limit(mc: dict | None, *, cab_top: float, f_top: float, puck_lo: float | None,
+                   given: tuple[float, str] | None = None) -> tuple[float, str]:
+    """The trusted limit and its header text, from `given` (Hz, note), the mesh check or UNVERIFIED_LIMIT.
 
+    given replaces the mesh check's limit and text, as "<Hz> Hz (<note>)", and is capped as below.
     With the puck (puck_lo, its lowest frequency, given), the cabinet-to-puck blend runs above the
     limit, so a limit less than BLEND_MIN_OCT below the top of the cabinet field (cab_top) is capped
     there. Without it, a grid past the cabinet field caps the limit at cab_top. A limit below what
     the run needs (puck_lo, where the blend starts, or the top of a puck-less grid) raises ValueError.
     """
-    tl = float(mc["trusted_limit_hz"]) if mc else UNVERIFIED_LIMIT
-    note = "" if mc else " (unverified)"
+    if given is not None:
+        tl, note = float(given[0]), f" ({given[1]})"
+    else:
+        tl = float(mc["trusted_limit_hz"]) if mc else UNVERIFIED_LIMIT
+        note = "" if mc else " (unverified)"
     if puck_lo is not None:
         cap = cab_top / 2 ** BLEND_MIN_OCT
         if tl > cap:
@@ -310,15 +250,23 @@ def _trusted_limit(mc: dict | None, *, cab_top: float, f_top: float, puck_lo: fl
 
 
 def run_directivity(params_path: Path | None, out_dir: Path, *, fast: bool = False,
-                    f_max_3d: float = 4000.0, per_wavelength: float = 6.0) -> Path:
-    """Simulate, score and plot the design; write out_dir/report.html, scores.json and plots/."""
-    d = _design(params_path)
+                    f_max_3d: float = 4000.0, per_wavelength: float = 6.0,
+                    trusted_limit: tuple[float, str] | None = None) -> Path:
+    """Simulate, score and plot the design; write out_dir/report.html, scores.json and plots/.
+
+    trusted_limit (Hz, note) replaces the mesh check's limit and its header text; it is still capped
+    to leave room for the cabinet-to-puck blend (_trusted_limit).
+    """
+    d = load_design(params_path)
     out_dir = Path(out_dir)
     mc_path = out_dir / "mesh_check.json"
     h_max = FAST_H_MAX if fast else CAB_H_MAX
-    mc, mc_why = _usable_mesh_check(json.loads(mc_path.read_text()) if mc_path.exists() else None, d,
-                                    h_max=h_max, per_wavelength=per_wavelength)
-    f = _grid(FAST_GRID if fast else FULL_GRID)
+    if trusted_limit is None:
+        mc, mc_why = _usable_mesh_check(json.loads(mc_path.read_text()) if mc_path.exists() else None, d,
+                                        h_max=h_max, per_wavelength=per_wavelength)
+    else:
+        mc, mc_why = None, ""
+    f = grid(*(FAST_GRID if fast else FULL_GRID))
     f_cab = f if fast else f[f <= f_max_3d]
     fp = None
     if not fast:  # the puck's grid points, ending on the hold frequency when the grid goes past it
@@ -326,21 +274,21 @@ def run_directivity(params_path: Path | None, out_dir: Path, *, fast: bool = Fal
         if f[-1] > PUCK_HOLD_F:
             fp = np.union1d(fp, [PUCK_HOLD_F])
     tl, tl_text = _trusted_limit(mc, cab_top=float(f_cab[-1]), f_top=float(f[-1]),
-                                 puck_lo=None if fp is None else float(fp[0]))
+                                 puck_lo=None if fp is None else float(fp[0]), given=trusted_limit)
     kw = dict(per_wavelength=per_wavelength, cache_dir=CACHE_DIR)
     t0 = time.perf_counter()
-    cab = _banded(lambda x: cabinet_field(d.p, d.coax, d.bass, x, h_max=h_max, **kw), f_cab, "cabinet")
-    puck = None if fp is None else _banded(lambda x: puck_field(d.p, d.coax, x, **kw), fp, "puck")
+    cab = banded(lambda x: cabinet_field(d.p, d.coax, d.bass, x, h_max=h_max, **kw), f_cab, "cabinet")
+    puck = None if fp is None else banded(lambda x: puck_field(d.p, d.coax, x, **kw), fp, "puck")
     rec = None
     if not fast:
         t1 = time.perf_counter()
         rec = recess_ratio(d.coax, cache_dir=CACHE_DIR)
         print(f"recess ratio: {len(rec[0])} frequencies, {time.perf_counter() - t1:.1f} s", file=sys.stderr, flush=True)
     xo = FixedCrossover()
-    ways, total, gains, spin = _evaluate(d, cab, puck, f, tl, xo, lf_recess=rec)
+    ways, total, gains, spin = responses(d, cab, puck, f, tl, xo, lf_recess=rec)
     obs, sec = ways.obs, coax_section(ways)
     blend, far = ways.meta["puck_blend"], ways.meta["coax_far_h0_h180"]
-    scores = score_all(f, total, sec, obs, spin, trusted_limit=tl, xo=xo, puck_blend=blend, coax_far=far)
+    scores = ways_scores(f, ways, total, spin, tl, xo)
 
     # Cardioid: the vent resistance spread (same fields), and the lumped model for comparison.
     cp = cardioid_params(d.p, d.layout, d.coax)
@@ -413,7 +361,7 @@ def _row(cells: list[str], cls: str = "") -> str:
     return f"<tr{f' class={cls!r}' if cls else ''}>" + "".join(cells) + "</tr>"
 
 
-def _html(d: _Design, *, fast, mc, mc_why, tl_text, scores, gains, xo, ways, vent, cp, max_diff, fields, wall,
+def _html(d: Design, *, fast, mc, mc_why, tl_text, scores, gains, xo, ways, vent, cp, max_diff, fields, wall,
           lf_recess=None) -> str:
     e = html.escape
     sha = _params_sha(d)
@@ -443,7 +391,7 @@ def _html(d: _Design, *, fast, mc, mc_why, tl_text, scores, gains, xo, ways, ven
         if mc.get("capped_by_memory"):
             how += "; the check stopped early because the finer mesh would not fit in memory"
     else:
-        how = f"{tl_text}: {mc_why}"
+        how = f"{tl_text}: {mc_why}" if mc_why else tl_text
     mismatch = ways.meta["lf_join_mismatch_db"]
     rec_lo, rec_hi = (float(lf_recess[0][0]), float(lf_recess[0][-1])) if lf_recess is not None else (0.0, 0.0)
     notes = [

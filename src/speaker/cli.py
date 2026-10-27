@@ -21,6 +21,8 @@ def main(argv: list[str] | None = None) -> int:
     d.add_argument("--fast", action="store_true", help="coarse mesh, 50 Hz-1 kHz, no puck (minutes, not hours)")
     d.add_argument("--mesh-check", action="store_true",
                    help="only run the mesh-convergence check, writing mesh_check.json (hours)")
+    d.add_argument("--trusted-limit", type=float, default=None, metavar="HZ",
+                   help="trusted 3D limit in Hz, in place of mesh_check.json's")
     args = parser.parse_args(argv)
     try:
         if args.command == "build":
@@ -30,7 +32,8 @@ def main(argv: list[str] | None = None) -> int:
             out = mesh_check(args.params, args.out)
         else:
             from .directivity_report import run_directivity
-            out = run_directivity(args.params, args.out, fast=args.fast)
+            given = None if args.trusted_limit is None else (args.trusted_limit, "given on the command line")
+            out = run_directivity(args.params, args.out, fast=args.fast, trusted_limit=given)
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
