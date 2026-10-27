@@ -1,0 +1,108 @@
+number = 1
+title = "Cardioid first, then the front shape"
+base = "params/default.toml"
+trusted_limit_hz = 2851
+trusted_note = "inherited from round 0's mesh check (2026-10-27)"
+finals = 2
+
+[[compare]]
+label = "Round 0 (round 0b run)"
+scores = "out/round0b/scores.json"
+
+[[stage]]
+name = "vents"
+settings = "vents"
+rank_by = "cardioid"
+include_round0 = true
+grid = { "vents.centre_from_front_mm" = [120, 160, 200, 240, 280], "vents.slots_per_side" = [6, 9, 12] }
+
+# Every shape variant is applied on top of the vents stage's winner.
+[[stage]]
+name = "shape"
+settings = "screen"
+rank_by = "directivity"
+include_round0 = true
+
+[[stage.variant]]
+name = "w330-sq-m290"
+set = { "cabinet.width_mm" = 330 }
+
+[[stage.variant]]
+name = "w320-ro15-m280"
+set = { "cabinet.front_edge" = "roundover", "cabinet.edge_size_mm" = 15, "cabinet.flare_mouth_d_mm" = 280 }
+
+[[stage.variant]]
+name = "w330-ro20-m280"
+set = { "cabinet.width_mm" = 330, "cabinet.front_edge" = "roundover", "cabinet.edge_size_mm" = 20, "cabinet.flare_mouth_d_mm" = 280 }
+
+[[stage.variant]]
+name = "w330-ro30-m260"
+set = { "cabinet.width_mm" = 330, "cabinet.front_edge" = "roundover", "cabinet.edge_size_mm" = 30, "cabinet.flare_mouth_d_mm" = 260 }
+
+[[stage.variant]]
+name = "w330-ro40-m240"
+set = { "cabinet.width_mm" = 330, "cabinet.front_edge" = "roundover", "cabinet.edge_size_mm" = 40, "cabinet.flare_mouth_d_mm" = 240 }
+
+[[stage.variant]]
+name = "w320-ro35-m240"
+set = { "cabinet.front_edge" = "roundover", "cabinet.edge_size_mm" = 35, "cabinet.flare_mouth_d_mm" = 240 }
+
+[[stage.variant]]
+name = "w330-ch20-m280"
+set = { "cabinet.width_mm" = 330, "cabinet.front_edge" = "chamfer", "cabinet.edge_size_mm" = 20, "cabinet.flare_mouth_d_mm" = 280 }
+
+[[stage.variant]]
+name = "w330-ch30-m260"
+set = { "cabinet.width_mm" = 330, "cabinet.front_edge" = "chamfer", "cabinet.edge_size_mm" = 30, "cabinet.flare_mouth_d_mm" = 260 }
+
+[[stage.variant]]
+name = "w330-ch40-m240"
+set = { "cabinet.width_mm" = 330, "cabinet.front_edge" = "chamfer", "cabinet.edge_size_mm" = 40, "cabinet.flare_mouth_d_mm" = 240 }
+
+[[stage.variant]]
+name = "w320-ch35-m240"
+set = { "cabinet.front_edge" = "chamfer", "cabinet.edge_size_mm" = 35, "cabinet.flare_mouth_d_mm" = 240 }
+
+[[stage.variant]]
+name = "w330-fa15-step-m260"
+set = { "cabinet.width_mm" = 330, "cabinet.front_edge" = "facets", "cabinet.facet_angle_deg" = 15, "cabinet.facet_width_mm" = 30, "cabinet.facet_base_z_mm" = 800, "cabinet.facet_ramp_mm" = 0, "cabinet.flare_mouth_d_mm" = 260 }
+
+[[stage.variant]]
+name = "w330-fa25-step-m260"
+set = { "cabinet.width_mm" = 330, "cabinet.front_edge" = "facets", "cabinet.facet_angle_deg" = 25, "cabinet.facet_width_mm" = 30, "cabinet.facet_base_z_mm" = 800, "cabinet.facet_ramp_mm" = 0, "cabinet.flare_mouth_d_mm" = 260 }
+
+[[stage.variant]]
+name = "w330-fa15-ramp-m240"
+set = { "cabinet.width_mm" = 330, "cabinet.front_edge" = "facets", "cabinet.facet_angle_deg" = 15, "cabinet.facet_width_mm" = 40, "cabinet.facet_base_z_mm" = 700, "cabinet.facet_ramp_mm" = 100, "cabinet.flare_mouth_d_mm" = 240 }
+
+[[stage.variant]]
+name = "w330-fa25-ramp-m240"
+set = { "cabinet.width_mm" = 330, "cabinet.front_edge" = "facets", "cabinet.facet_angle_deg" = 25, "cabinet.facet_width_mm" = 40, "cabinet.facet_base_z_mm" = 700, "cabinet.facet_ramp_mm" = 100, "cabinet.flare_mouth_d_mm" = 240 }
+
+# Dropped by the Task 10 Step 2 budget ruling (2026-10-27): rows 15-20 of the brief's table.
+# Estimated 14.0 h with all 20 shape variants against the 12 h budget; 11.75 h with the first 14
+# (measured VENTS 7.0 min, SCREEN 25.8 min = cabinet 21.3 + puck 4.3; shared pucks counted once).
+# To restore one, uncomment its two lines.
+# [[stage.variant]]
+# name = "w330-ro30-m260-ob30"
+# set = { "cabinet.width_mm" = 330, "cabinet.front_edge" = "roundover", "cabinet.edge_size_mm" = 30, "cabinet.flare_mouth_d_mm" = 260, "cabinet.outer_baffle_t_mm" = 30 }
+
+# [[stage.variant]]
+# name = "w330-ro30-m260-cone"
+# set = { "cabinet.width_mm" = 330, "cabinet.front_edge" = "roundover", "cabinet.edge_size_mm" = 30, "cabinet.flare_mouth_d_mm" = 260, "cabinet.flare_profile" = "cone" }
+
+# [[stage.variant]]
+# name = "w330-ro20-m260-in10"
+# set = { "cabinet.width_mm" = 330, "cabinet.front_edge" = "roundover", "cabinet.edge_size_mm" = 20, "cabinet.flare_mouth_d_mm" = 260, "cabinet.coax_offset_x_mm" = 10 }
+
+# [[stage.variant]]
+# name = "w330-ro20-m260-out10"
+# set = { "cabinet.width_mm" = 330, "cabinet.front_edge" = "roundover", "cabinet.edge_size_mm" = 20, "cabinet.flare_mouth_d_mm" = 260, "cabinet.coax_offset_x_mm" = -10 }
+
+# [[stage.variant]]
+# name = "w330-ro30-m260-top60"
+# set = { "cabinet.width_mm" = 330, "cabinet.front_edge" = "roundover", "cabinet.edge_size_mm" = 30, "cabinet.flare_mouth_d_mm" = 260, "cabinet.top_margin_mm" = 60 }
+
+# [[stage.variant]]
+# name = "w330-ch30-m260-bass"
+# set = { "cabinet.width_mm" = 330, "cabinet.front_edge" = "chamfer", "cabinet.edge_size_mm" = 30, "cabinet.flare_mouth_d_mm" = 260, "cabinet.bass_centres_z_mm" = [260, 580] }
