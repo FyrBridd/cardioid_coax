@@ -134,15 +134,15 @@ class _Round:
     def result(self, stage: dict, name: str) -> dict | None:
         return next((r for r in stage["results"] if r["name"] == name), None)
 
-    def recommendation(self) -> tuple[str, str] | None:
-        """(name, params path relative to out_dir) of rank 1: the first final that ran, else the stage's best."""
+    def recommendation(self) -> tuple[str, str, int] | None:
+        """(name, params path relative to out_dir, rank) of the first final that ran, else the stage's best."""
         for f in self.finals:
             if f.get("status") == "ok":
-                return f["name"], f["params"]
+                return f["name"], f["params"], int(f["rank"])
         if self.last:
             best = next((n for n in self.last["ranking"]["order"] if n != REFERENCE), None)
             if best:
-                return best, f"{self.last['name']}/{best}/params_tuned.toml"
+                return best, f"{self.last['name']}/{best}/params_tuned.toml", 1
         return None
 
     def final_scores(self, name: str) -> list[dict] | None:
@@ -203,13 +203,13 @@ def _recommendation(rd: _Round, notes: dict[str, str]) -> str:
     if rec is None:
         parts.append("<p class='fail'>No variant ran to completion, so there is no recommendation.</p>")
         return "".join(parts)
-    name, rel = rec
+    name, rel, rank = rec
     try:
         p1, p0 = load_params(rd.out_dir / rel), load_params(rd.round0_params())
     except (OSError, ValueError, KeyError) as exc:
         parts.append(f"<p class='fail'>The parameter files could not be read: {e(str(exc))}</p>")
         return "".join(parts)
-    parts.append(f"<p>Recommended: <b>{e(name)}</b> (rank 1), against round 0.</p>")
+    parts.append(f"<p>Recommended: <b>{e(name)}</b> (rank {rank}), against round 0.</p>")
     parts.append(_dimensions(p1, p0))
     draw_designs(rd.out_dir / "shape.png", [(f"Recommendation: {name}", p1), ("Round 0", p0)])
     parts.append('<img src="shape.png" alt="front elevation and plan section: the recommendation and round 0">'
@@ -249,6 +249,11 @@ def _scores(rd: _Round) -> str:
         rows.append((f"{f['rank']}. {f['name']} ({tag})", rd.final_scores(f["name"])))
     for c in rd.spec.compare:
         rows.append((c.label, _read_json(Path(c.scores))))
+    for f in rd.finals:
+        if f.get("status") != "ok":
+            last = [x for x in str(f.get("reason", "")).splitlines() if x.strip()]
+            parts.append(f"<p class='fail'>Final {f.get('rank')}, {e(str(f['name']))}, did not complete "
+                         f"({e(str(f.get('status')))}): {e(last[-1].strip() if last else 'no reason recorded')}</p>")
     parts.append(_score_table(rows, "trusted", False))
     parts.append("<p class='cap'>Trusted scores only (below the trusted limit); they decide the ranking. "
                  "Green passes, orange warns, red fails.</p>")
@@ -292,14 +297,10 @@ def _confidence(rd: _Round) -> str:
     return "<h2>Confidence</h2><ul>" + "".join(f"<li>{i}</li>" for i in items) + "</ul>"
 
 
-_GAIN = re.compile(r"<td>(bass|coax_lf|coax_hf)</td>\s*<td class=\"num\">([+-]?[\d.]+) dB</td>")
-
-
-def _gains(path: Path) -> dict[str, str]:
-    try:
-        return {k: f"{v} dB" for k, v in _GAIN.findall(path.read_text())}
-    except OSError:
-        return {}
+def _gains(final_dir: Path) -> dict[str, float] | None:
+    """The way gains (dB) run_directivity wrote to gains.json, or None when missing or unreadable."""
+    g = _read_json(final_dir / "gains.json")
+    return g if isinstance(g, dict) else None
 
 
 def _crossover(rd: _Round) -> str:
@@ -308,13 +309,18 @@ def _crossover(rd: _Round) -> str:
              f"<p>Fixed and provisional: acoustic LR4 at {xo.bass_coax:g} Hz (bass to coax) and {xo.lf_hf:g} Hz "
              "(coax LF to HF). No EQ and no delays. Each way's gain matches its level at 23° to the coax LF way. "
              "Plan 3 replaces this.</p>"]
-    rows = []
+    rows, missing = [], []
     for f in rd.finals:
         if f.get("status") != "ok":
             continue
-        g = _gains(rd.out_dir / f["report"])
+        g = _gains(rd.out_dir / f["dir"])
+        if g is None:
+            missing.append(f["name"])
+        cell = lambda k: "n/a" if g is None or g.get(k) is None else f"{g[k]:+.2f} dB"  # noqa: E731
         rows.append(_row([f"<td>{e(f['name'])}</td>"]
-                         + [f'<td class="num">{e(g.get(k, "n/a"))}</td>' for k in ("bass", "coax_lf", "coax_hf")]))
+                         + [f'<td class="num">{cell(k)}</td>' for k in ("bass", "coax_lf", "coax_hf")]))
+    if missing:
+        parts.append(f"<p class='warn'>Way gains not found (no gains.json) for: {e(', '.join(missing))}.</p>")
     if rows:
         parts.append("<table><tr><th>Final</th><th>bass</th><th>coax_lf</th><th>coax_hf</th></tr>"
                      + "".join(rows) + "</table>")

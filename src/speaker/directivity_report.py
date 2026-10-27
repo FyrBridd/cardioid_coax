@@ -252,7 +252,7 @@ def _trusted_limit(mc: dict | None, *, cab_top: float, f_top: float, puck_lo: fl
 def run_directivity(params_path: Path | None, out_dir: Path, *, fast: bool = False,
                     f_max_3d: float = 4000.0, per_wavelength: float = 6.0,
                     trusted_limit: tuple[float, str] | None = None) -> Path:
-    """Simulate, score and plot the design; write out_dir/report.html, scores.json and plots/.
+    """Simulate, score and plot the design; write out_dir/report.html, scores.json, gains.json (the way gains in dB) and plots/.
 
     trusted_limit (Hz, note) replaces the mesh check's limit and its header text; it is still capped
     to leave room for the cabinet-to-puck blend (_trusted_limit).
@@ -330,6 +330,8 @@ def run_directivity(params_path: Path | None, out_dir: Path, *, fast: bool = Fal
 
     (out_dir / "scores.json").write_text(
         json.dumps(_jsonable([dataclasses.asdict(s) for s in scores]), indent=2, allow_nan=False))
+    (out_dir / "gains.json").write_text(json.dumps(_jsonable({k: float(v) for k, v in gains.items()}), indent=2,
+                                                   allow_nan=False))
     page = _html(d, fast=fast, mc=mc, mc_why=mc_why, tl_text=tl_text, scores=scores, gains=gains, xo=xo, ways=ways,
                  vent=vent, cp=cp, max_diff=max_diff, fields={"cabinet": cab, "puck": puck}, lf_recess=rec,
                  wall=time.perf_counter() - t0)

@@ -110,9 +110,8 @@ def build(out: Path, *, gate_unmet=False, notes=None, compare=None):
         for pl in PLOTS:
             (fdir / "plots" / f"{pl}.png").write_bytes(png())
         put(fdir / "scores.json", scores(spread=0.2 if name == "best" else 0.6))
-        (fdir / "report.html").write_text(
-            "<table><tr><td>bass</td><td class=\"num\">-1.25 dB</td><td>x</td></tr>"
-            "<tr><td>coax_lf</td><td class=\"num\">+0.00 dB</td></tr><tr><td>coax_hf</td><td class=\"num\">-3.50 dB</td></tr></table>")
+        (fdir / "report.html").write_text("<html></html>")
+        put(fdir / "gains.json", {"bass": -1.25, "coax_lf": 0.0, "coax_hf": -3.5})
         finals.append({"rank": k, "name": name, "stage": "shape", "params": f"shape/{name}/params_tuned.toml",
                        "dir": f"finals/{name}", "report": f"finals/{name}/report.html", "status": "ok", "reason": "",
                        "wall_s": 1.0})
@@ -240,3 +239,19 @@ def test_report_only_without_results_says_so(tmp_path, capsys):
     toml.write_text(TOML)
     assert main(["round", str(toml), "--out", str(tmp_path / "none"), "--report-only"]) == 2
     assert "no results" in capsys.readouterr().err
+
+
+def test_missing_gains_warn_visibly(round_dir):
+    (round_dir / "finals" / "best" / "gains.json").unlink()
+    html = html_of(round_dir)
+    assert "Way gains not found (no gains.json) for: best" in html and "n/a" in html
+    assert "-1.25 dB" in html  # the other final still shows its gains
+
+
+def test_errored_first_final_is_listed_and_rank_is_real(round_dir):
+    finals = json.loads((round_dir / "finals.json").read_text())
+    finals[0].update(status="error", reason="Traceback\nRuntimeError: out of <memory>")
+    put(round_dir / "finals.json", finals)
+    html = html_of(round_dir)
+    assert "<b>stage-base</b> (rank 2)" in html
+    assert "Final 1, best, did not complete (error): RuntimeError: out of &lt;memory&gt;" in html
