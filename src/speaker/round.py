@@ -10,6 +10,7 @@ Layout of out_dir (default out/rounds/<number>):
     finals/<name>/                      run_directivity's report, scores and plots
     finals.json                         the finals in rank order
     results.json                        every stage's results and ranking, the finals, the spec and its sha256
+    report.html, shape.png, plots/      the round report (round_report.write_report); notes.md feeds it
 
 A result.json is reused when its params_sha256, settings and code_version match (an "error" result is
 always retried, as its cause may be transient), so a killed round
@@ -31,6 +32,7 @@ from .bem.run import code_version
 from .directivity_report import _jsonable, run_directivity
 from .evaluate import SETTINGS, evaluate
 from .ranking import REFERENCE, Ranking, VariantResult, rank
+from .round_report import write_report
 from .variants import REPO, RoundSpec, StageSpec, apply_overrides, load_round, read_raw, with_tuned, write_params
 
 TRACEBACK_LINES = 20
@@ -133,7 +135,7 @@ def _final(out_dir: Path, stage: str, k: int, name: str, spec: RoundSpec) -> dic
 
 
 def run_round(spec_path: Path, out_dir: Path | None = None) -> Path:
-    """Run every stage of the round file at spec_path, then its finals; returns out_dir / "results.json"."""
+    """Run every stage of the round file at spec_path, then its finals; writes results.json, then the report and returns its path."""
     spec_path = Path(spec_path)
     spec = load_round(spec_path)
     out_dir = Path("out/rounds") / str(spec.number) if out_dir is None else Path(out_dir)
@@ -174,8 +176,15 @@ def run_round(spec_path: Path, out_dir: Path | None = None) -> Path:
                   file=sys.stderr, flush=True)
     write_json(out_dir / "finals.json", finals)
 
-    path = out_dir / "results.json"
-    write_json(path, {"spec": str(spec_path), "spec_sha256": _sha256(spec_path), "number": spec.number,
+    results = out_dir / "results.json"
+    write_json(results, {"spec": str(spec_path), "spec_sha256": _sha256(spec_path), "number": spec.number,
                       "title": spec.title, "code_version": cv, "commit": commit, "stages": stages,
                       "finals": finals})
-    return path
+    return write_report(out_dir, spec)
+
+
+def report_only(spec_path: Path, out_dir: Path | None = None) -> Path:
+    """Re-render the report from the stored results of the round at spec_path, evaluating nothing."""
+    spec = load_round(Path(spec_path))
+    out_dir = Path("out/rounds") / str(spec.number) if out_dir is None else Path(out_dir)
+    return write_report(out_dir, spec)

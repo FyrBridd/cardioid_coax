@@ -26,13 +26,15 @@ def main(argv: list[str] | None = None) -> int:
     r = sub.add_parser("round", help="run a round file's stages and finals (resumes finished variants)")
     r.add_argument("round_toml", type=Path, metavar="ROUND_TOML", help="round file, e.g. rounds/round-1.toml")
     r.add_argument("--out", type=Path, default=None, help="output directory (default: out/rounds/<number>/)")
+    r.add_argument("--report-only", action="store_true",
+                   help="re-render report.html from the stored results, evaluating nothing")
     args = parser.parse_args(argv)
     try:
         if args.command == "build":
             out = build(args.params, args.out)
         elif args.command == "round":
-            from .round import run_round
-            out = run_round(args.round_toml, args.out)
+            from .round import report_only, run_round
+            out = (report_only if args.report_only else run_round)(args.round_toml, args.out)
         elif args.mesh_check:
             from .directivity_report import mesh_check
             out = mesh_check(args.params, args.out)

@@ -103,8 +103,8 @@ def result(out, stage, name):
 def test_round_writes_results_rankings_and_finals(tmp_path, fake_eval):
     out = tmp_path / "out"
     path = run_round(spec(tmp_path), out)
-    assert path == out / "results.json"
-    data = json.loads(path.read_text())
+    assert path == out / "report.html" and path.exists()
+    data = json.loads((out / "results.json").read_text())
     assert data["spec"] == str(tmp_path / "round.toml") and len(data["spec_sha256"]) == 64
     assert [s["name"] for s in data["stages"]] == ["vents", "shape"]
     vents = data["stages"][0]
@@ -257,14 +257,14 @@ def test_round_stops_when_a_stage_has_no_best(tmp_path, fake_eval):
 def test_round_out_defaults_to_out_rounds_number(tmp_path, fake_eval, monkeypatch):
     s = spec(tmp_path)
     monkeypatch.chdir(tmp_path)
-    assert run_round(s) == Path("out/rounds/7/results.json")
+    assert run_round(s) == Path("out/rounds/7/report.html")
     assert (tmp_path / "out/rounds/7/finals.json").exists()
 
 
 def test_cli_round(tmp_path, fake_eval, capsys):
     out = tmp_path / "o"
     assert main(["round", str(spec(tmp_path)), "--out", str(out)]) == 0
-    assert f"wrote {out / 'results.json'}" in capsys.readouterr().out
+    assert f"wrote {out / 'report.html'}" in capsys.readouterr().out
 
 
 def test_commit_is_head_or_unknown():
