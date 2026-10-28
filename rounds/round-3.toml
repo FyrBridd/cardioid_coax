@@ -1,0 +1,54 @@
+number = 3
+title = "Coax offset against the mouth, top margin and bass heights"
+base = "params/round-2.toml"
+base_label = "the round 2 recommendation"
+trusted_limit_hz = 2851
+trusted_note = "from the mesh check of the round 2 recommendation, n12-sq-m320 (2026-10-28, rejection capped at 30 dB)"
+finals = 2
+
+[[compare]]
+label = "Round 2 recommendation (extra run)"
+scores = "out/rounds/2/extra/n12-sq-m320/scores.json"
+
+# No vents stage: the rejection has 7 dB to spare, and moving the vents forward cost 23° flatness.
+# Every variant is tuned (R and V), so the taller cabinets can choose a larger chamber.
+[[stage]]
+name = "shape"
+settings = "screen"
+rank_by = "directivity"
+include_round0 = true
+
+# The flat front must hold the mouth + 2 x |offset| + 2 x 5 mm, so at 330 mm wide an offset costs mouth.
+[[stage.variant]]
+name = "in5-m310"
+set = { "cabinet.coax_offset_x_mm" = 5, "cabinet.flare_mouth_d_mm" = 310 }
+
+[[stage.variant]]
+name = "in10-m300"
+set = { "cabinet.coax_offset_x_mm" = 10, "cabinet.flare_mouth_d_mm" = 300 }
+
+[[stage.variant]]
+name = "in10-m290"
+set = { "cabinet.coax_offset_x_mm" = 10, "cabinet.flare_mouth_d_mm" = 290 }
+
+[[stage.variant]]
+name = "in15-m290"
+set = { "cabinet.coax_offset_x_mm" = 15, "cabinet.flare_mouth_d_mm" = 290 }
+
+# More cabinet above the coax (20 mm is the base); the coax stays at ear height, so the cabinet grows.
+[[stage.variant]]
+name = "top60"
+set = { "cabinet.top_margin_mm" = 60 }
+
+[[stage.variant]]
+name = "top100"
+set = { "cabinet.top_margin_mm" = 100 }
+
+# Bass drivers higher, nearer the coax (200 / 520 mm is the base).
+[[stage.variant]]
+name = "bass260-580"
+set = { "cabinet.bass_centres_z_mm" = [260, 580] }
+
+[[stage.variant]]
+name = "bass280-600"
+set = { "cabinet.bass_centres_z_mm" = [280, 600] }
