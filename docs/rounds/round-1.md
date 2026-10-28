@@ -143,11 +143,20 @@ and −2.3 dB on the HF.
 
 ## Trusted limit of the recommendation
 
-**By the rule: 177 Hz.** The mesh check of w330-sq-m290 (6 against 8
-elements per wavelength, as in round 0) failed the 198 Hz band by 2.41 dB,
-so the limit fell to that band's lower edge. The full rerun then refused to
-start (it needs a limit of at least 500 Hz). The round's finals report,
-with the inherited 2851 Hz, stays as the recommendation's report.
+**2851 Hz, with the rule fixed (2026-10-28).** The mesh check now caps the
+rear rejection at 30 dB before comparing the meshes (85e4aaa). Rerun on
+w330-sq-m290, every band up to 2851 Hz agrees within 0.09 dB (worst in the
+157 Hz band), so its own limit is 2851 Hz, the same as round 0's. The
+check again stopped at the 4 kHz band on memory (about 24.8 GB against
+22 GB). The full rerun from that mesh check now runs, and its report
+replaces the finals report in `out/rounds/1/finals/w330-sq-m290/`. Every
+trusted score is unchanged. The two above-limit rows (flat23 and presence
+lift, low confidence) moved by 0.1 dB, because the limit is now 2850.9 Hz
+rather than the round file's rounded 2851 Hz.
+
+**Before the fix: 177 Hz.** The first mesh check failed the 198 Hz band
+by 2.41 dB, so the limit fell to that band's lower edge, and the full
+rerun refused to start (it needs a limit of at least 500 Hz).
 
 **Why: one point in a very deep null.** I recomputed the compared curves
 from the cached fields (a scratch script, not committed):
@@ -168,9 +177,8 @@ from the cached fields (a scratch script, not committed):
 - The check again stopped at the 4 kHz band on memory (about 24.8 GB
   against 22 GB).
 
-So the scores stand. The cardioid scores use the band minimum (16.3 dB at
-300 Hz), far from the null. Formally, though, this design's own limit is
-177 Hz until the rule caps the rejection before comparing (see Still open).
+So the scores stood even before the fix. The cardioid scores use the band
+minimum (16.3 dB at 300 Hz), far from the null.
 
 ## The recess finding (round 0 open question 1)
 
@@ -217,10 +225,9 @@ back, so it is no longer counted twice.
    (plan 3).
 5. **Screen against finals.** The screen's 0.5 dB width advantage vanished
    in the finals. Treat screen differences under about 0.5 dB as ties.
-6. **The mesh check's rejection rule.** Cap the rear rejection (at, say,
-   30 dB) before comparing meshes, so a deep null cannot set the trusted
-   limit. Your call; it is a code change, and the rerun is minutes because
-   every field is cached.
+6. **The mesh check's rejection rule.** Done 2026-10-28: the rejection is
+   capped at 30 dB before the meshes are compared, and the
+   recommendation's own limit is 2851 Hz (see Trusted limit).
 7. **Round 0's open questions 3–5** (the rear null at ±120°, the low bass
    below the axis, the puck detail above the trusted limit) are unchanged.
    The provisional assumptions of round 0 (cone depth 65 mm, HF exit
