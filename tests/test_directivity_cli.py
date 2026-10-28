@@ -26,10 +26,11 @@ def _az(d):
     return np.degrees(np.arctan2(d[:, 0], -d[:, 1]))
 
 
-def _fake_cabinet_field(calls, hot=(1100.0, 1900.0), at=None, gain_db=3.0):
+def _fake_cabinet_field(calls, hot=(1100.0, 1900.0), at=None, gain_db=3.0, null=None):
     """Analytic stand-in for cabinet_field: the 8-per-wavelength mesh is gain_db hot over `hot` (default
     1.1-1.9 kHz, a range outside every crossover level-matching band; None: converged everywhere), in
-    every direction or only at H angle `at`."""
+    every direction or only at H angle `at`. null = (at, coarse_db, fine_db) also cuts H angle `at` by
+    coarse_db / fine_db on the 6 / 8 per-wavelength mesh, over `hot`."""
     import numpy as np
     from speaker.bem import analytic
     from speaker.bem.run import BAND_EDGES, CAB_H_COAX, CAB_H_VENT, SourceField, observation_set
@@ -45,6 +46,9 @@ def _fake_cabinet_field(calls, hot=(1100.0, 1900.0), at=None, gain_db=3.0):
             fm = (f >= hot[0]) & (f <= hot[1])
             dm = np.ones(len(o.dirs), bool) if at is None else np.abs(_az(o.dirs) - at) < 0.5
             pr[np.ix_(fm, np.arange(len(CABINET_TAGS)), dm)] *= 10 ** (gain_db / 20)
+        if null is not None:
+            fm, dm = (f >= hot[0]) & (f <= hot[1]), np.abs(_az(o.dirs) - null[0]) < 0.5
+            pr[np.ix_(fm, np.arange(len(CABINET_TAGS)), dm)] *= 10 ** (-null[1 if per_wavelength == 6.0 else 2] / 20)
         edge = BAND_EDGES[int(np.searchsorted(BAND_EDGES, f[0]))]
         band = {"edge": edge, "h": 0.05, "freqs": len(f), "nodes": 100, "triangles": 196, "mesh_s": 0.1, "solve_s": 1.0}
         return SourceField(np.asarray(f, float), CABINET_TAGS, o, pr, {"bands": [band]})
@@ -107,6 +111,22 @@ def test_mesh_check_compares_cardioid_and_off_axis_curves(tmp_path, monkeypatch,
     monkeypatch.setattr(dr, "cabinet_field", _fake_cabinet_field([], hot=hot, at=at, gain_db=6.0))
     monkeypatch.setattr(dr, "_fine_dofs", _small_dofs)
     out = json.loads(dr.mesh_check(None, tmp_path, f_max=4000.0).read_text())
+    assert out["trusted_limit_hz"] == pytest.approx(limit or float(freq_grid(50, 4000, 12)[-1]))
+
+
+@pytest.mark.parametrize("coarse_db, fine_db, limit", [
+    (58.0, 55.7, None),                         # a rear null deeper than the cap reads 30 dB on both meshes
+    (20.0, 23.0, 1000 * 2 ** (-7.5 / 3)),       # below the cap the rejection is compared as is
+])
+def test_mesh_check_caps_the_rear_rejection(tmp_path, monkeypatch, coarse_db, fine_db, limit):
+    import speaker.directivity_report as dr
+    from speaker.bem.run import freq_grid
+    monkeypatch.setattr(dr, "cabinet_field", _fake_cabinet_field([], hot=(200.0, 300.0), gain_db=0.0,
+                                                                  null=(165.0, coarse_db, fine_db)))
+    monkeypatch.setattr(dr, "_fine_dofs", _small_dofs)
+    out = json.loads(dr.mesh_check(None, tmp_path, f_max=4000.0).read_text())
+    assert out["rejection_cap_db"] == dr.REJ_CAP_DB == 30.0
+    assert "capped at 30 dB" in out["compared"]
     assert out["trusted_limit_hz"] == pytest.approx(limit or float(freq_grid(50, 4000, 12)[-1]))
 
 
@@ -225,7 +245,8 @@ def test_mesh_check_json_is_used_only_by_a_matching_run(tmp_path, monkeypatch):
     for bad, kw, word in (({"params_sha256": "0" * 64}, full, "params"),
                           ({}, dict(h_max=dr.FAST_H_MAX, per_wavelength=6.0), "h_max"),
                           ({}, dict(h_max=dr.CAB_H_MAX, per_wavelength=5.0), "per_wavelength"),
-                          ({"per_wavelength": [6.0, 10.0]}, full, "per_wavelength")):
+                          ({"per_wavelength": [6.0, 10.0]}, full, "per_wavelength"),
+                          ({"rejection_cap_db": None}, full, "rear rejection cap None vs 30.0")):
         got, why = dr._usable_mesh_check({**mc, **bad}, d, **kw)
         assert got is None and word in why
     monkeypatch.setattr(bem_run, "code_version", lambda: "other")

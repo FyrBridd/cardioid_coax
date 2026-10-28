@@ -46,6 +46,7 @@ FAST_H_MAX = 0.08  # m
 COARSE = 6.0  # elements per wavelength of the run the mesh check verifies
 FINE = 8.0  # elements per wavelength of the mesh check's finer run; all mesh sizes scale by COARSE / FINE
 REJ_BAND = (150.0, 500.0)  # Hz, where the mesh check compares the coax-section rear rejection
+REJ_CAP_DB = 30.0  # dB, the mesh check caps the rear rejection here: a deep null's exact depth is not a mesh error
 MAX_DEV_DB = 0.5  # mesh check: allowed |dB| change on refinement
 UNVERIFIED_LIMIT = 3000.0  # Hz, trusted limit without a mesh check
 VENT_SPREAD = (0.7, 1.3)  # vent resistance factors for the felt's unknown resistance
@@ -95,7 +96,7 @@ def _mesh_sizes(edge: float, per_wavelength: float) -> tuple[float, float, float
 _COMPARED = ("the 23° curve, listening window, early reflections and sound power, and H 0-30° (5° steps), after "
              "the crossover, over the whole grid; H ±40-90° (10° steps, both sides) after the crossover, over the "
              "whole grid; and the coax-section rear rejection L(0°) - L(θ) for θ = ±120-180° (5° steps, before "
-             "the crossover) over 150-500 Hz")
+             f"the crossover) over 150-500 Hz, capped at {REJ_CAP_DB:g} dB")
 
 
 def _check_curves(d: Design, fld: SourceField) -> np.ndarray:
@@ -104,7 +105,7 @@ def _check_curves(d: Design, fld: SourceField) -> np.ndarray:
     obs, lv = fld.obs, _spl(total)
     sec = _spl(coax_section(ways))
     out_rej = (fld.f < REJ_BAND[0]) | (fld.f > REJ_BAND[1])
-    rej = [sec[:, _h(obs, 0)] - sec[:, _h(obs, a)] for a in REAR_H]
+    rej = [np.minimum(sec[:, _h(obs, 0)] - sec[:, _h(obs, a)], REJ_CAP_DB) for a in REAR_H]
     for r in rej:
         r[out_rej] = np.nan
     return np.stack([spin.at23, spin.lw, spin.er, spin.sp, *(lv[:, _h(obs, a)] for a in LW_RING),
@@ -174,6 +175,7 @@ def mesh_check(params_path: Path | None, out_dir: Path, *, f_max: float = 4000.0
         "capped_by_memory": capped,
         "f_max_hz": float(f_max),
         "max_dev_db": MAX_DEV_DB,
+        "rejection_cap_db": REJ_CAP_DB,
         "params_sha256": _params_sha(d),
         "code_version": bem_run.code_version(),
     }
@@ -205,12 +207,13 @@ def _trusted_value(scores: list[Score], key: str) -> float:
 
 
 def _usable_mesh_check(mc: dict | None, d: Design, *, h_max: float, per_wavelength: float) -> tuple[dict | None, str]:
-    """mc if it was made for this run (params, code version, mesh densities, h_max), else (None, why not)."""
+    """mc if it was made for this run (params, code version, mesh densities, h_max, rejection cap), else (None, why not)."""
     if mc is None:
         return None, "no mesh check in this output directory (run with --mesh-check)"
     want = {"params_sha256": ("params", _params_sha(d)), "code_version": ("code version", bem_run.code_version()),
-            "per_wavelength": ("per_wavelength", [float(per_wavelength), FINE]), "h_max_m": ("h_max", h_max)}
-    bad = [f"{what} {mc.get(k)!r} vs {v!r}" if k in ("per_wavelength", "h_max_m") else what
+            "per_wavelength": ("per_wavelength", [float(per_wavelength), FINE]), "h_max_m": ("h_max", h_max),
+            "rejection_cap_db": ("rear rejection cap", REJ_CAP_DB)}
+    bad = [f"{what} {mc.get(k)!r} vs {v!r}" if k in ("per_wavelength", "h_max_m", "rejection_cap_db") else what
            for k, (what, v) in want.items() if mc.get(k) != v]
     if bad:
         return None, "mesh_check.json is not for this run (" + "; ".join(bad) + "), so it is ignored"
