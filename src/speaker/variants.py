@@ -50,6 +50,7 @@ class RoundSpec:
     finals: int
     compare: tuple[Compare, ...]
     stages: tuple[StageSpec, ...]
+    base_label: str = "round 0"  # what the report calls the base design, mid-sentence
 
 
 def read_raw(path: Path) -> dict:
@@ -143,4 +144,4 @@ def load_round(path: Path) -> RoundSpec:
         trusted_limit=float(d["trusted_limit_hz"]), trusted_note=d.get("trusted_note", ""),
         finals=finals,
         compare=tuple(Compare(c["label"], REPO / c["scores"]) for c in d.get("compare", [])),
-        stages=tuple(stages))
+        stages=tuple(stages), base_label=d.get("base_label", "round 0"))

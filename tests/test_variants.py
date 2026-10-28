@@ -122,3 +122,9 @@ def test_with_tuned_writes_rayl_and_litres(tmp_path):
     p = load_params(tmp_path / "t.toml")
     assert p.vents.specific_resistance == pytest.approx(123.0)
     assert p.cabinet.coax_chamber_net_volume == pytest.approx(0.0042)
+
+
+def test_base_label_defaults_to_round_0(tmp_path):
+    assert load_round(write(tmp_path, ROUND)).base_label == "round 0"
+    text = ROUND.replace('finals = 2', 'finals = 2\nbase_label = "the round 1 recommendation"')
+    assert load_round(write(tmp_path, text)).base_label == "the round 1 recommendation"

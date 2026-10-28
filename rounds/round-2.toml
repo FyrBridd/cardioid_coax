@@ -1,0 +1,97 @@
+number = 2
+title = "Vents forward, then the flare and the front"
+base = "params/round-1.toml"
+base_label = "the round 1 recommendation"
+trusted_limit_hz = 2851
+trusted_note = "from the mesh check of the round 1 recommendation, w330-sq-m290 (2026-10-28, rejection capped at 30 dB)"
+finals = 2
+
+[[compare]]
+label = "Round 1 recommendation (round 1 final)"
+scores = "out/rounds/1/finals/w330-sq-m290/scores.json"
+
+# The 100 mm slots cannot start closer than baffle_t + VENT_GAP (51 mm) behind the front, so they stop
+# at about 105 mm; shorter 70 mm slots go further forward.
+[[stage]]
+name = "vents"
+settings = "vents"
+rank_by = "cardioid"
+include_round0 = true
+grid = { "vents.centre_from_front_mm" = [105], "vents.slots_per_side" = [6, 9, 12] }
+
+[[stage.variant]]
+name = "s70-cff=88-n=9"
+set = { "vents.slot_w_mm" = 70, "vents.centre_from_front_mm" = 88, "vents.slots_per_side" = 9 }
+
+[[stage.variant]]
+name = "s70-cff=88-n=12"
+set = { "vents.slot_w_mm" = 70, "vents.centre_from_front_mm" = 88, "vents.slots_per_side" = 12 }
+
+[[stage.variant]]
+name = "s70-cff=95-n=9"
+set = { "vents.slot_w_mm" = 70, "vents.centre_from_front_mm" = 95, "vents.slots_per_side" = 9 }
+
+[[stage.variant]]
+name = "s70-cff=95-n=12"
+set = { "vents.slot_w_mm" = 70, "vents.centre_from_front_mm" = 95, "vents.slots_per_side" = 12 }
+
+# Every shape variant is applied on top of the vents stage's winner. Square edges unless named.
+[[stage]]
+name = "shape"
+settings = "screen"
+rank_by = "directivity"
+include_round0 = true
+
+# The flare mouth alone (290 mm is the base).
+[[stage.variant]]
+name = "sq-m270"
+set = { "cabinet.flare_mouth_d_mm" = 270 }
+
+[[stage.variant]]
+name = "sq-m310"
+set = { "cabinet.flare_mouth_d_mm" = 310 }
+
+[[stage.variant]]
+name = "sq-m320"
+set = { "cabinet.flare_mouth_d_mm" = 320 }
+
+# A small edge with the full mouth: 15 mm is the largest that leaves the 290 mm mouth its land at 330 mm.
+[[stage.variant]]
+name = "ro15-m290"
+set = { "cabinet.front_edge" = "roundover", "cabinet.edge_size_mm" = 15 }
+
+[[stage.variant]]
+name = "ch15-m290"
+set = { "cabinet.front_edge" = "chamfer", "cabinet.edge_size_mm" = 15 }
+
+# A deeper flare: 30 mm (18 + 12 mm sheets) and 36 mm (two 18 mm sheets) outer baffles. 54 mm fails
+# the 50 L bass minimum (48.2 L). The thicker baffle pushes the first vent position back (fillers end
+# VENT_GAP before the slots), so these put the 100 mm slots at 120 mm, round 1's position.
+[[stage.variant]]
+name = "ob30"
+set = { "cabinet.outer_baffle_t_mm" = 30, "vents.slot_w_mm" = 100, "vents.centre_from_front_mm" = 120 }
+
+[[stage.variant]]
+name = "ob36"
+set = { "cabinet.outer_baffle_t_mm" = 36, "vents.slot_w_mm" = 100, "vents.centre_from_front_mm" = 120 }
+
+# The rows dropped from round 1, on the square front.
+[[stage.variant]]
+name = "cone"
+set = { "cabinet.flare_profile" = "cone" }
+
+[[stage.variant]]
+name = "in10"
+set = { "cabinet.coax_offset_x_mm" = 10 }
+
+[[stage.variant]]
+name = "out10"
+set = { "cabinet.coax_offset_x_mm" = -10 }
+
+[[stage.variant]]
+name = "top60"
+set = { "cabinet.top_margin_mm" = 60 }
+
+[[stage.variant]]
+name = "bass260-580"
+set = { "cabinet.bass_centres_z_mm" = [260, 580] }

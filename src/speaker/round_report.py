@@ -153,14 +153,14 @@ class _Round:
         return sc
 
     def round0_rescored(self) -> tuple[str, list[dict]] | None:
-        """(label, scores) of round 0 as the last stage ran it with this code, when that result is ok."""
+        """(label, scores) of the base design as the last stage ran it with this code, when that result is ok."""
         if not self.last:
             return None
         r = (_read_json(self.out_dir / self.last["name"] / REFERENCE / "result.json")
              or self.result(self.last, REFERENCE))
         if not isinstance(r, dict) or r.get("status") != "ok" or not r.get("scores"):
             return None
-        return (f"Round 0 rescored (this code, {r.get('settings', self.last['settings'])} settings, "
+        return (f"{_cap(self.spec.base_label)} rescored (this code, {r.get('settings', self.last['settings'])} settings, "
                 f"{'tuned' if r.get('tuned') else 'untuned'})", r["scores"])
 
     def round0_params(self) -> Path:
@@ -173,7 +173,11 @@ class _Round:
 
 # ---------------------------------------------------------------- sections
 
-def _dimensions(p1: Params, p0: Params) -> str:
+def _cap(s: str) -> str:
+    return s[:1].upper() + s[1:]
+
+
+def _dimensions(p1: Params, p0: Params, base: str) -> str:
     def shape(p: Params) -> str:
         c = p.cabinet
         mm = lambda x: f"{x * 1000:.1f}".rstrip("0").rstrip(".")  # noqa: E731
@@ -205,8 +209,8 @@ def _dimensions(p1: Params, p0: Params) -> str:
         a, b = fn(p1), fn(p0)
         body.append(_row([f"<td>{e(label)}</td>", f"<td>{e(a)}</td>", f"<td>{e(b)}</td>"],
                          "" if a == b else "chg"))
-    return ("<table><tr><th>Dimension</th><th>Recommendation</th><th>Round 0</th></tr>" + "".join(body)
-            + "</table><div class='cap'>Rows that differ from round 0 are shaded.</div>")
+    return (f"<table><tr><th>Dimension</th><th>Recommendation</th><th>{e(_cap(base))}</th></tr>" + "".join(body)
+            + f"</table><div class='cap'>Rows that differ from {e(base)} are shaded.</div>")
 
 
 def _recommendation(rd: _Round, notes: dict[str, str]) -> str:
@@ -221,10 +225,11 @@ def _recommendation(rd: _Round, notes: dict[str, str]) -> str:
     except (OSError, ValueError, KeyError) as exc:
         parts.append(f"<p class='fail'>The parameter files could not be read: {e(str(exc))}</p>")
         return "".join(parts)
-    parts.append(f"<p>Recommended: <b>{e(name)}</b> (rank {rank}), against round 0.</p>")
-    parts.append(_dimensions(p1, p0))
-    draw_designs(rd.out_dir / "shape.png", [(f"Recommendation: {name}", p1), ("Round 0", p0)])
-    parts.append('<img src="shape.png" alt="front elevation and plan section: the recommendation and round 0">'
+    label = rd.spec.base_label
+    parts.append(f"<p>Recommended: <b>{e(name)}</b> (rank {rank}), against {e(label)}.</p>")
+    parts.append(_dimensions(p1, p0, label))
+    draw_designs(rd.out_dir / "shape.png", [(f"Recommendation: {name}", p1), (_cap(label), p0)])
+    parts.append(f'<img src="shape.png" alt="front elevation and plan section: the recommendation and {e(label)}">'
                  '<div class="cap">Front elevation above, plan section at the coax centre height below, both '
                  'at the same scale.</div>')
     return "".join(parts)
@@ -291,7 +296,7 @@ def _confidence(rd: _Round) -> str:
     items = [
         f"<b>Trusted limit</b>: {spec.trusted_limit:.0f} Hz, {e(spec.trusted_note)}. Scores are split at the "
         "limit; the ones above it are low confidence and do not rank designs. The variants are not mesh-checked: "
-        "the mesh check was run on round 0's design, and the limit is carried over to them.",
+        f"the mesh check was run on {e(spec.base_label)}, and the limit is carried over to them.",
         f"<b>Screen against finals</b>: the stages that rank by directivity ran with the screen settings, "
         f"{scr.per_wavelength:g} elements per wavelength up to the trusted limit. The screen grid stops one "
         f"1/{scr.ppo}-octave step below the trusted limit, at {top:.0f} Hz against {spec.trusted_limit:.0f} Hz. "

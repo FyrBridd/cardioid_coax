@@ -290,3 +290,16 @@ def test_errored_first_final_is_listed_and_rank_is_real(round_dir):
     html = html_of(round_dir)
     assert "<b>stage-base</b> (rank 2)" in html
     assert "Final 1, best, did not complete (error): RuntimeError: out of &lt;memory&gt;" in html
+
+
+def test_base_label_names_the_reference_design(tmp_path):
+    import dataclasses
+    out = tmp_path / "r"
+    build(out)
+    html = html_of(out, dataclasses.replace(SPEC, base_label="the round 1 recommendation"))
+    for s in ("The round 1 recommendation rescored (this code, screen settings, untuned)",
+              "<th>The round 1 recommendation</th>", "against the round 1 recommendation.",
+              "Rows that differ from the round 1 recommendation are shaded.",
+              "the mesh check was run on the round 1 recommendation"):
+        assert s in html, s
+    assert "Round 0" not in html.replace("Round 0 final", "") and "round 0" not in html.replace("round 0&#x27;s mesh", "")
