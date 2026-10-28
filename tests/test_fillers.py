@@ -62,7 +62,7 @@ def test_corner_overshoot_message_shows_the_overshoot():
         compute_layout(_cab(coax_chamber_net_volume=0.01498), CX, B)
     assert "raise" not in str(e.value)
 
-@pytest.mark.parametrize("ear", [0.85, 1.05])
+@pytest.mark.parametrize("ear", [0.92, 1.05])  # below ~0.90 m the bass falls under 50 L
 def test_fillers_follow_ear_height(ear):
     l = compute_layout(_cab(coax_centre_z=ear), CX, B)
     assert l.coax_chamber_as_built == pytest.approx(0.010, abs=VOLUME_TOL)

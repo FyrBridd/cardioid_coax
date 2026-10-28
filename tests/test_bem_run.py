@@ -1,7 +1,11 @@
+import sys
+from dataclasses import replace
+
 import numpy as np, pytest
 from speaker.bem import analytic
 from speaker.bem.mesh import box_piston_mesh
-from speaker.bem.run import freq_grid, observation_set, cabinet_field
+from fakes import default_design
+from speaker.bem.run import freq_grid, observation_set, cabinet_field, code_version, recess_ratio
 from speaker.bem.solver import solve_band
 from speaker.constants import C, RHO
 from speaker.drivers import load_driver
@@ -46,7 +50,7 @@ def test_banding_and_stored_phase_convention(monkeypatch):
     calls = []
     monkeypatch.setattr(run, "solve_band", _fake_solver(calls, 1j))   # +90° in solve_band's e^{-iωt}
     f = np.array([100.0, 250.0, 260.0, 1500.0, 12000.0])
-    fld = cabinet_field(P, CX, B, f, params_text="x", per_wavelength=1.0, h_max=0.2, cache_dir=None)
+    fld = cabinet_field(P, CX, B, f, per_wavelength=1.0, h_max=0.2, cache_dir=None)
     assert [c[1] for c in calls] == [(100.0, 250.0), (260.0,), (1500.0,), (12000.0,)]
     bands = fld.meta["bands"]
     assert [b["edge"] for b in bands] == [250.0, 500.0, 2000.0, 12000.0]
@@ -57,14 +61,14 @@ def test_banding_and_stored_phase_convention(monkeypatch):
     assert fld.p.shape == (5, 6, len(fld.obs.dirs))
     assert np.all(fld.p == -1j)   # stored e^{+jωt}: the conjugate of solve_band
     with pytest.raises(ValueError, match="12000"):
-        cabinet_field(P, CX, B, np.array([12001.0]), params_text="x", cache_dir=None)
+        cabinet_field(P, CX, B, np.array([12001.0]), cache_dir=None)
 
 def test_cache_key_covers_inputs_and_code_version(tmp_path, monkeypatch):
     import dataclasses
     P, CX, B = load_params(), load_driver("bms_10c262"), load_driver("dayton_rss265ho_44")
     calls = []
     monkeypatch.setattr(run, "solve_band", _fake_solver(calls))
-    kw = dict(params_text="x", h_max=0.1, cache_dir=tmp_path)
+    kw = dict(h_max=0.1, cache_dir=tmp_path)
     cabinet_field(P, CX, B, np.array([60.0]), **kw)
     cabinet_field(P, CX, B, np.array([60.0]), **kw)
     assert len(calls) == 1
@@ -74,7 +78,7 @@ def test_cache_key_covers_inputs_and_code_version(tmp_path, monkeypatch):
     cabinet_field(P, CX, load_driver("bms_10c262"), np.array([60.0]), **kw)   # bass driver changed
     cabinet_field(P, CX, B, np.array([60.0]), h_coax=0.008, **kw)
     cabinet_field(P, CX, B, np.array([60.0]), h_vent=0.015, **kw)
-    # Params enter the key themselves, not only through params_text.
+    # Geometry enters the key through the meshes.
     P2 = dataclasses.replace(P, cabinet=dataclasses.replace(P.cabinet, coax_centre_z=P.cabinet.coax_centre_z + 0.01))
     cabinet_field(P2, CX, B, np.array([60.0]), **kw)
     monkeypatch.setattr(run, "code_version", lambda: "other")
@@ -82,41 +86,57 @@ def test_cache_key_covers_inputs_and_code_version(tmp_path, monkeypatch):
     assert len(calls) == 9
 
 
-def test_code_version_includes_the_bem_package_versions(monkeypatch):
+def test_code_version_includes_the_bempp_version(monkeypatch):
     import importlib.metadata
     base = run.code_version()
     real = importlib.metadata.version
-    for dist in ("bempp-cl", "gmsh"):
-        monkeypatch.setattr(importlib.metadata, "version", lambda d, dist=dist: "0.0" if d == dist else real(d))
-        assert run.code_version() != base, dist
-        monkeypatch.setattr(importlib.metadata, "version", real)
+    monkeypatch.setattr(importlib.metadata, "version", lambda d: "0.0" if d == "bempp-cl" else real(d))
+    assert run.code_version() != base
+    monkeypatch.setattr(importlib.metadata, "version", real)
     assert run.code_version() == base
 
 
-def _code_version_of_copy(src):
-    import os, subprocess, sys
-    env = {**os.environ, "PYTHONPATH": str(src)}
-    out = subprocess.run([sys.executable, "-c", "import speaker.bem.run as r; print(r.__file__); print(r.code_version())"],
-                         env=env, capture_output=True, text=True, check=True).stdout.split()
-    assert out[0].startswith(str(src))  # the copy, not the installed package
-    return out[1]
+@pytest.fixture
+def counting_solver(monkeypatch):
+    class Counter:
+        calls = 0
+
+    def fake(mesh, f, points, **kw):
+        Counter.calls += 1
+        return np.zeros((len(f), len(mesh.tag_names), points.shape[1]), complex)
+    monkeypatch.setattr(run, "solve_band", fake)
+    return Counter
 
 
-def test_code_version_follows_the_field_modules_only(tmp_path):
-    """A changed module that the field depends on changes the key; a changed unrelated module does not."""
-    import shutil
-    from pathlib import Path
-    src = tmp_path / "src"
-    shutil.copytree(Path(run.__file__).parents[1], src / "speaker", ignore=shutil.ignore_patterns("__pycache__"))
-    base = _code_version_of_copy(src)
-    assert base == run.code_version()
-    for rel, changes in (("scores.py", False), ("report.py", False), ("bem/mesh.py", True),
-                         ("layout.py", True), ("constants.py", True), ("bem/__init__.py", True)):
-        f = src / "speaker" / rel
-        text = f.read_text()
-        f.write_text(text + "\n# edited\n")
-        assert (_code_version_of_copy(src) != base) == changes, rel
-        f.write_text(text)
+F = np.array([100.0])
+
+
+def test_cache_ignores_non_geometry_params(counting_solver, tmp_path):
+    p, coax, bass = default_design()
+    cabinet_field(p, coax, bass, F, h_max=0.2, cache_dir=tmp_path)
+    q = replace(p, vents=replace(p.vents, specific_resistance=400.0),
+                drive=replace(p.drive, amp_v_rms=10.0),
+                cabinet=replace(p.cabinet, coax_chamber_net_volume=0.012))
+    cabinet_field(q, coax, bass, F, h_max=0.2, cache_dir=tmp_path)
+    assert counting_solver.calls == 1
+
+
+def test_cache_resolves_when_geometry_moves(counting_solver, tmp_path):
+    p, coax, bass = default_design()
+    cabinet_field(p, coax, bass, F, h_max=0.2, cache_dir=tmp_path)
+    q = replace(p, vents=replace(p.vents, centre_from_front=0.240))
+    cabinet_field(q, coax, bass, F, h_max=0.2, cache_dir=tmp_path)
+    assert counting_solver.calls == 2
+
+
+def test_code_version_covers_only_the_solver(monkeypatch, tmp_path):
+    before = code_version()
+    fake = tmp_path / "layout.py"; fake.write_text("# changed\n")
+    monkeypatch.setattr(sys.modules["speaker.layout"], "__file__", str(fake))
+    assert code_version() == before
+    fake2 = tmp_path / "solver.py"; fake2.write_text("# changed\n")
+    monkeypatch.setattr(sys.modules["speaker.bem.solver"], "__file__", str(fake2))
+    assert code_version() != before
 
 
 def test_cabinet_field_far_points_on_h0_and_h180(monkeypatch):
@@ -128,7 +148,7 @@ def test_cabinet_field_far_points_on_h0_and_h180(monkeypatch):
         return np.broadcast_to(1j * points[1], (len(freqs), len(mesh.tag_names), points.shape[1])).copy()
     monkeypatch.setattr(run, "solve_band", fake)
     f = np.array([150.0, 300.0])
-    fld = cabinet_field(P, CX, B, f, params_text="x", h_max=0.2, cache_dir=None)
+    fld = cabinet_field(P, CX, B, f, h_max=0.2, cache_dir=None)
     o, (cx, cz) = fld.obs, compute_layout(P, CX, B).coax_centre
     assert fld.p.shape == (2, 6, len(o.dirs))
     far = fld.meta["far_h0_h180"]
@@ -144,14 +164,14 @@ def test_cabinet_field_mesh_sizes_reach_the_mesher(monkeypatch):
     calls = []
     monkeypatch.setattr(run, "solve_band", _fake_solver(calls))
     for kw in ({}, {"h_coax": 0.006}, {"h_vent": 0.01}):
-        cabinet_field(P, CX, B, np.array([100.0]), params_text="x", h_max=0.05, cache_dir=None, **kw)
+        cabinet_field(P, CX, B, np.array([100.0]), h_max=0.05, cache_dir=None, **kw)
     assert calls[1][0] > calls[0][0] and calls[2][0] > calls[0][0]   # finer regions, more triangles
 
 
 @pytest.mark.bem
 def test_cabinet_radiates_as_monopole_at_low_frequency(tmp_path):
     P, CX, B = load_params(), load_driver("bms_10c262"), load_driver("dayton_rss265ho_44")
-    fld = cabinet_field(P, CX, B, np.array([20.0]), params_text=DEFAULT_PATH.read_text(),
+    fld = cabinet_field(P, CX, B, np.array([20.0]),
                         h_max=0.08, cache_dir=tmp_path)   # ka ~ 0.2 for the whole cabinet
     # Each source against a monopole at its own position. The bass drivers sit up to 0.75 m from the
     # reference point, so at 2 m the 1/r spread alone is +4/-3 dB; compare per source position instead.
@@ -188,10 +208,38 @@ def test_small_box_baffle_step():
 @pytest.mark.bem
 def test_cache_hit_skips_solver(tmp_path, monkeypatch):
     P, CX, B = load_params(), load_driver("bms_10c262"), load_driver("dayton_rss265ho_44")
-    a = cabinet_field(P, CX, B, np.array([60.0]), params_text="x", h_max=0.1, cache_dir=tmp_path)
+    a = cabinet_field(P, CX, B, np.array([60.0]), h_max=0.1, cache_dir=tmp_path)
     import speaker.bem.run as run
     monkeypatch.setattr(run, "solve_band", lambda *a, **k: (_ for _ in ()).throw(AssertionError("solver called")))
-    b = cabinet_field(P, CX, B, np.array([60.0]), params_text="x", h_max=0.1, cache_dir=tmp_path)
+    b = cabinet_field(P, CX, B, np.array([60.0]), h_max=0.1, cache_dir=tmp_path)
     assert np.array_equal(a.p, b.p)
+    import dataclasses
+    P2 = dataclasses.replace(P, cabinet=dataclasses.replace(P.cabinet, coax_centre_z=P.cabinet.coax_centre_z + 0.01))
     with pytest.raises(AssertionError, match="solver called"):
-        cabinet_field(P, CX, B, np.array([60.0]), params_text="y", h_max=0.1, cache_dir=tmp_path)
+        cabinet_field(P2, CX, B, np.array([60.0]), h_max=0.1, cache_dir=tmp_path)
+
+def test_recess_ratio_divides_the_recess_by_the_flat_disc_on_axis(monkeypatch, tmp_path):
+    calls = {}
+
+    def fake(kind, build, f, points, *, per_wavelength, h_max, cache_dir):
+        calls[kind] = (np.asarray(f), points, h_max, cache_dir)
+        v = {"recess_disc": 3.0 + 1j, "flat_disc": 2.0}[kind]
+        return np.full((len(f), 1, points.shape[1]), v), ("coax_lf",), {"bands": []}
+    monkeypatch.setattr(run, "_banded_field", fake)
+    f, r = recess_ratio(load_driver("bms_10c262"), cache_dir=tmp_path)
+    assert np.array_equal(f, freq_grid(300.0, 4000.0, 6))
+    assert np.allclose(r, (3.0 + 1j) / 2.0)
+    assert set(calls) == {"recess_disc", "flat_disc"}
+    for _, points, h_max, cache_dir in calls.values():
+        assert np.allclose(points, [[0.0], [-run.AXIS_R], [0.0]])   # 1 m on axis, in front of the disc
+        assert h_max == run.PUCK_H_MAX and cache_dir == tmp_path
+
+@pytest.mark.bem
+def test_recess_ratio_near_unity_at_300_hz(tmp_path):
+    f, r = recess_ratio(load_driver("bms_10c262"), np.array([40.0, 300.0]), cache_dir=tmp_path)
+    db = 20 * np.log10(np.abs(r))
+    # At low frequency the recess air moves as a plug, so the source appears at the opening, as the flat piston.
+    assert abs(db[0]) < 0.05
+    # The recess air is also a small front chamber (about 1.4 L behind a 230 mm opening, resonant near
+    # 950 Hz), so R rises as f²: about +1.06 dB at 300 Hz, though the recess is small against λ = 1.14 m.
+    assert abs(db[1]) < 1.5

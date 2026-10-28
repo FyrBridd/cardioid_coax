@@ -6,7 +6,7 @@ from speaker.params import load_params, DEFAULT_PATH
 @pytest.mark.bem
 def test_hf_beam_narrows_with_frequency(tmp_path):
     P, CX = load_params(), load_driver("bms_10c262")
-    fld = puck_field(P, CX, np.array([2000.0, 8000.0]), params_text=DEFAULT_PATH.read_text(),
+    fld = puck_field(P, CX, np.array([2000.0, 8000.0]),
                      per_wavelength=5.0, cache_dir=tmp_path)
     o = fld.obs; hf = fld.names.index("coax_hf")
     ang = o.h_angles[(o.h_angles >= 0) & (o.h_angles <= 90)]
@@ -23,4 +23,4 @@ def test_hf_beam_narrows_with_frequency(tmp_path):
 @pytest.mark.parametrize("f", [[400.0], [12500.0], [1000.0, 13000.0]])
 def test_puck_field_rejects_frequencies_outside_range(f):
     with pytest.raises(ValueError, match="500 Hz"):
-        puck_field(load_params(), load_driver("bms_10c262"), np.array(f), params_text="", cache_dir=None)
+        puck_field(load_params(), load_driver("bms_10c262"), np.array(f), cache_dir=None)

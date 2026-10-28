@@ -14,11 +14,11 @@ from dataclasses import dataclass
 from .cardioid import CardioidParams
 from .drivers import Driver
 from .fillers import Fillers, compute_fillers
+from .front_shape import BASS_NET_TARGET, validate_front  # noqa: F401 (BASS_NET_TARGET re-exported)
 from .params import Params
 
 DIVIDER_CLEARANCE = 0.010  # m between coax frame bottom and divider top
-BASS_NET_TARGET = 0.050  # m^3, soft target (warning)
-BASS_NET_MIN = 0.030  # m^3, hard minimum (ValueError)
+BASS_NET_MIN = 0.030  # m^3, floor for direct callers of validate; front_shape enforces BASS_NET_TARGET
 EAR_HEIGHT_TOLERANCE = 0.020  # m, coax centre vs seated ear height (warning)
 
 
@@ -74,7 +74,7 @@ def compute_layout(p: Params, coax: Driver, bass: Driver) -> Layout:
         height=height,
         interior_w=interior_w,
         interior_d=interior_d,
-        coax_centre=(c.width / 2, c.coax_centre_z),
+        coax_centre=(c.width / 2 + c.coax_offset_x, c.coax_centre_z),
         bass_centres=((c.width / 2, c.bass_centres_z[0]), (c.width / 2, c.bass_centres_z[1])),
         divider_z=divider_z,
         coax_chamber_gross=coax_gross,
@@ -92,11 +92,6 @@ def compute_layout(p: Params, coax: Driver, bass: Driver) -> Layout:
         volume_to_fill=coax_empty - coax_net,
     )
     warns: list[str] = []
-    if bass_net < BASS_NET_TARGET:
-        warns.append(
-            f"bass net volume {bass_net * 1000:.1f} L is below the "
-            f"{BASS_NET_TARGET * 1000:.0f} L target (25 L per driver)"
-        )
     ear = p.room.seat[2]
     if abs(c.coax_centre_z - ear) > EAR_HEIGHT_TOLERANCE:
         warns.append(
@@ -117,13 +112,13 @@ def cardioid_params(p: Params, l: Layout, coax: Driver) -> CardioidParams:
     zs = [s[1] for s in l.vent_slots]
     z_rel = (min(zs) + max(zs)) / 2 - c.coax_centre_z
     x = -(v.centre_from_front - c.baffle_t)
-    half = c.width / 2
+    cx = l.coax_centre[0]  # the vents are on the side faces, x = width and x = 0
     return CardioidParams(
         chamber_volume=l.coax_chamber_as_built,
         vent_area=2 * v.slots_per_side * v.slot_w * v.slot_h,
         vent_length=c.panel_t,
         vent_resistance=v.specific_resistance,
-        vent_positions=((x, half, z_rel), (x, -half, z_rel)),
+        vent_positions=((x, c.width - cx, z_rel), (x, -cx, z_rel)),
         n_slots=2 * v.slots_per_side,
     )
 
@@ -134,11 +129,6 @@ def _mm(x: float) -> str:
 
 def validate(l: Layout, p: Params, coax: Driver, bass: Driver) -> None:
     c = p.cabinet
-    if abs(c.baffle_t - 2 * c.panel_t) > 1e-9:
-        raise ValueError(
-            f"baffle_t {_mm(c.baffle_t)} must equal two panel layers (2 x panel_t {_mm(c.panel_t)} = "
-            f"{_mm(2 * c.panel_t)}): the baffle is built as an outer and an inner panel_t layer"
-        )
     if c.top_margin < 0:
         raise ValueError(
             f"top_margin {_mm(c.top_margin)} is negative: coax frame top at "
@@ -212,3 +202,4 @@ def validate(l: Layout, p: Params, coax: Driver, bass: Driver) -> None:
             f"bass chamber net volume {l.bass_net * 1000:.1f} L is below the hard minimum "
             f"of {BASS_NET_MIN * 1000:.0f} L"
         )
+    validate_front(p, coax, bass, l)

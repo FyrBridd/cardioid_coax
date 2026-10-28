@@ -35,7 +35,7 @@ def _fake_cabinet_field(calls, hot=(1100.0, 1900.0), at=None, gain_db=3.0):
     from speaker.bem.run import BAND_EDGES, CAB_H_COAX, CAB_H_VENT, SourceField, observation_set
     from speaker.bem.mesh import CABINET_TAGS
 
-    def fake(p, coax, bass, f, *, params_text, per_wavelength, h_max, cache_dir,
+    def fake(p, coax, bass, f, *, per_wavelength, h_max, cache_dir,
              h_coax=CAB_H_COAX, h_vent=CAB_H_VENT):
         calls.append((per_wavelength, float(f[0]), float(f[-1]), h_max, h_coax, h_vent, tuple(f)))
         o = observation_set(2.0)
@@ -90,7 +90,7 @@ def test_mesh_check_refines_every_mesh_size(tmp_path, monkeypatch):
 def test_fine_meshes_have_more_nodes_in_every_band():
     """gmsh only (no BEM): the finer mesh of every mesh-check band up to 4 kHz has more nodes."""
     import speaker.directivity_report as dr
-    d = dr._design(None)
+    d = dr.load_design(None)
     for edge in (250.0, 500.0, 1000.0, 2000.0, 3000.0, 4000.0):
         n = [dr._fine_dofs(d.p, d.coax, d.bass, *dr._mesh_sizes(edge, pw)) for pw in (dr.COARSE, dr.FINE)]
         assert n[1] > 1.3 * n[0], (edge, n)
@@ -137,7 +137,7 @@ def test_memory_cap_at_the_4k_fine_band_keeps_the_3k_band(tmp_path, monkeypatch)
     monkeypatch.setattr(dr, "cabinet_field", _fake_cabinet_field(calls, hot=None))
     monkeypatch.setattr(dr, "_fine_dofs", lambda p, coax, bass, h, h_coax, h_vent: 19370 if h < 0.012 else 7000)
     mc = json.loads(dr.mesh_check(None, tmp_path, f_max=4000.0).read_text())
-    g = dr._grid(dr.FULL_GRID)
+    g = dr.grid(*dr.FULL_GRID)
     top3k = float(g[g <= 3000.0][-1])   # 2850.9 Hz
     assert mc["capped_by_memory"] is True and "3000" in mc["elements"] and "4000" not in mc["elements"]
     assert max(c[2] for c in calls) == pytest.approx(top3k)
@@ -149,6 +149,8 @@ def test_memory_cap_at_the_4k_fine_band_keeps_the_3k_band(tmp_path, monkeypatch)
     assert f"{top3k:.0f} Hz to {cab_top:.0f} Hz" in page   # the puck blend sits above the verified limit
     assert "above the trusted limit" in page
     assert f"The cabinet fields in the blend above {top3k:.0f} Hz are not mesh-checked" in page
+    gains = json.loads((tmp_path / "gains.json").read_text())
+    assert set(gains) == {"bass", "coax_lf", "coax_hf"} and all(isinstance(v, float) for v in gains.values())
     trusted = [s for s in json.loads((tmp_path / "scores.json").read_text()) if s["confidence"] == "trusted"]
     assert all(s["band"][1] <= top3k + 1e-6 for s in trusted)
 
@@ -157,7 +159,7 @@ def test_output_grids_hold_the_score_band_edges():
     import numpy as np
     import speaker.directivity_report as dr
     from speaker.bem.run import freq_grid
-    full, fast = dr._grid(dr.FULL_GRID), dr._grid(dr.FAST_GRID)
+    full, fast = dr.grid(*dr.FULL_GRID), dr.grid(*dr.FAST_GRID)
     for g, spec in ((full, dr.FULL_GRID), (fast, dr.FAST_GRID)):
         assert np.all(np.diff(g) > 0) and set(freq_grid(*spec)) <= set(g)
         assert g[0] == spec[0] and g[-1] <= spec[1]
@@ -172,7 +174,7 @@ def test_mesh_check_grid_is_the_full_run_cabinet_grid(tmp_path, monkeypatch):
     monkeypatch.setattr(dr, "cabinet_field", _fake_cabinet_field(calls, hot=None))
     monkeypatch.setattr(dr, "_fine_dofs", _small_dofs)
     dr.mesh_check(None, tmp_path, f_max=4000.0)
-    g = dr._grid(dr.FULL_GRID)
+    g = dr.grid(*dr.FULL_GRID)
     want = [tuple(g[(g <= 4000.0) & (np.searchsorted(dr.BAND_EDGES, g) == b)]) for b in range(6)]
     assert [c[6] for c in calls if c[0] == 6.0] == want
 
@@ -186,7 +188,7 @@ def test_converged_mesh_check_feeds_a_usable_limit_to_the_run(tmp_path, monkeypa
     top = float(freq_grid(50, 4000, 12)[-1])  # 3805.5 Hz: the last band's upper edge is past the grid
     assert mc["trusted_limit_hz"] == pytest.approx(top)
     # The full run's cabinet grid is the same, so the limit fits inside it.
-    f = dr._grid(dr.FULL_GRID)
+    f = dr.grid(*dr.FULL_GRID)
     cab_top = float(f[f <= 4000][-1])
     tl, text = dr._trusted_limit(mc, cab_top=cab_top, f_top=cab_top, puck_lo=None)
     assert tl == pytest.approx(top) and "unverified" not in text and "capped" not in text
@@ -213,7 +215,7 @@ def test_mesh_check_json_is_used_only_by_a_matching_run(tmp_path, monkeypatch):
     monkeypatch.setattr(dr, "cabinet_field", _fake_cabinet_field([], hot=None))
     monkeypatch.setattr(dr, "_fine_dofs", _small_dofs)
     mc = json.loads(dr.mesh_check(None, tmp_path, f_max=4000.0).read_text())
-    d = dr._design(None)
+    d = dr.load_design(None)
     assert mc["params_sha256"] == hashlib.sha256(d.path.read_bytes()).hexdigest()
     assert mc["code_version"] == bem_run.code_version()
     assert mc["per_wavelength"] == [6.0, 8.0] and mc["h_max_m"] == dr.CAB_H_MAX
@@ -249,7 +251,7 @@ def _stub_fields(monkeypatch, puck_calls):
     import speaker.directivity_report as dr
     from speaker.bem import analytic
     from speaker.bem.mesh import CABINET_TAGS, PUCK_TAGS
-    from speaker.bem.run import BAND_EDGES, CAB_H_COAX, CAB_H_VENT, SourceField, observation_set
+    from speaker.bem.run import BAND_EDGES, CAB_H_COAX, CAB_H_VENT, SourceField, freq_grid, observation_set
     o = observation_set(2.0)
     i0, i180 = o.h_idx[o.h_angles == 0][0], o.h_idx[o.h_angles == -180][0]
 
@@ -263,17 +265,22 @@ def _stub_fields(monkeypatch, puck_calls):
         band = {"edge": edge, "h": 0.05, "freqs": len(f), "nodes": 1, "triangles": 2, "mesh_s": 0.0, "solve_s": 0.0}
         return f, p, {"bands": [band]}
 
-    def cab(p, coax, bass, f, *, params_text, per_wavelength, h_max, cache_dir, h_coax=CAB_H_COAX, h_vent=CAB_H_VENT):
+    def cab(p, coax, bass, f, *, per_wavelength, h_max, cache_dir, h_coax=CAB_H_COAX, h_vent=CAB_H_VENT):
         f, pr, meta = make(f, CABINET_TAGS)
         return SourceField(f, CABINET_TAGS, o, pr, {**meta, "far_h0_h180": pr[:, :, [i0, i180]] * 2 / 50})
 
-    def puck(p, coax, f, *, params_text, per_wavelength, cache_dir):
+    def puck(p, coax, f, *, per_wavelength, cache_dir):
         puck_calls.append(np.asarray(f, float))
         f, pr, meta = make(f, PUCK_TAGS)
         ax = np.array([analytic.baffled_piston_on_axis(x, coax.hf_exit_d / 2, 1.0) for x in f]).conj()
         return SourceField(f, PUCK_TAGS, o, pr, {**meta, "axis_1m": np.stack([ax, ax], 1)})
+
+    def recess(coax, f=None, *, per_wavelength=6.0, cache_dir=None):   # a recess about 1 dB hot near 1 kHz
+        f = freq_grid(300.0, 4000.0, 6) if f is None else np.asarray(f, float)
+        return f, 10 ** (np.exp(-np.log2(f / 1000.0) ** 2) / 20) + 0j
     monkeypatch.setattr(dr, "cabinet_field", cab)
     monkeypatch.setattr(dr, "puck_field", puck)
+    monkeypatch.setattr(dr, "recess_ratio", recess)
     monkeypatch.setattr(dr, "_fine_dofs", _small_dofs)
 
 
@@ -307,12 +314,33 @@ def test_full_run_end_to_end_on_stub_fields(tmp_path, monkeypatch):
     assert "infinite-baffle piston" in page and "double-count" in page and "puck's on-axis response" in page
     assert "filler volumes" in page and "§7.1.1" in page
     assert "rear rejection" in page   # the mesh check note says what was compared
-    for png in ("polar_h", "polar_v", "spinorama", "window_family", "rear_rejection", "whole_rear"):
+    assert "times the recess ratio R" in page and "front-mounted on a large baffle" in page
+    assert "R runs 300-3810 Hz" in page and "plots/lf_reference.png" in page
+    for png in ("polar_h", "polar_v", "spinorama", "window_family", "rear_rejection", "whole_rear", "lf_reference"):
         assert (tmp_path / "plots" / f"{png}.png").stat().st_size > 0
     # A fast run in the same directory does not trust the full-run mesh check, and says why.
     page = dr.run_directivity(None, tmp_path, fast=True).read_text()
     assert "3000 Hz (unverified)" in page and "h_max" in page
     assert "piston of the HF exit" in page
+    assert "flat piston (fast run)" in page and "recess ratio" not in page
+
+
+def test_trusted_limit_override_in_header(tmp_path, monkeypatch):
+    _stub_fields(monkeypatch, [])
+    assert main(["directivity", "--fast", "--trusted-limit", "900", "--out", str(tmp_path)]) == 0
+    page = (tmp_path / "report.html").read_text()
+    assert "900 Hz (given on the command line)" in page and "unverified" not in page
+    trusted = [s for s in json.loads((tmp_path / "scores.json").read_text()) if s["confidence"] == "trusted"]
+    assert trusted and all(s["band"][1] <= 900.0 for s in trusted)
+
+
+def test_trusted_limit_override_is_still_capped_for_the_blend():
+    import speaker.directivity_report as dr
+    tl, text = dr._trusted_limit(None, cab_top=3805.5, f_top=20000.0, puck_lo=500.0, given=(4000.0, "from round 1"))
+    assert tl == pytest.approx(3805.5 / 2 ** (1 / 3)) and text.startswith(f"{tl:.0f} Hz (from round 1)")
+    assert "capped" in text and "unverified" not in text
+    assert dr._trusted_limit({"trusted_limit_hz": 1000.0}, cab_top=3805.5, f_top=20000.0, puck_lo=500.0,
+                             given=(2000.0, "given")) == (2000.0, "2000 Hz (given)")
 
 
 def test_frequency_axis_shades_the_puck_blend():

@@ -7,14 +7,21 @@ bass = "dayton_rss265ho_44"
 width_mm = 320
 depth_mm = 350
 panel_t_mm = 18
-baffle_t_mm = 36
 coax_centre_z_mm = 950
 top_margin_mm = 20
 divider_t_mm = 18
-side_edge_radius_mm = 0
 flare_mouth_d_mm = 290
 bass_centres_z_mm = [200, 520]
 coax_chamber_net_volume_l = 10
+outer_baffle_t_mm = 18     # the baffle is this outer layer plus one panel_t inner layer
+front_edge = "square"      # square | roundover | chamfer | facets
+edge_size_mm = 0           # roundover radius, or the 45° chamfer leg; 0 for square and facets
+facet_angle_deg = 0        # facets: angle back from the front plane
+facet_width_mm = 0         # facets: width of each facet, from the side edge inwards
+facet_base_z_mm = 0        # facets: height where the facet starts (the bass section below stays flat)
+facet_ramp_mm = 0          # facets: 0 = a horizontal step at the base; > 0 = a planar ramp this tall
+coax_offset_x_mm = 0       # + towards +x, the listener's side; mirrored on the other cabinet
+flare_profile = "ellipse"  # ellipse | cone
 
 [vents]
 slots_per_side = 12

@@ -124,3 +124,16 @@ def whole_rear(path: Path, f: np.ndarray, rej: np.ndarray, fc: float) -> None:
     ax.set_title("Whole-speaker rear rejection (info only: the bass drivers radiate both ways)")
     ax.legend(loc="upper right", fontsize=8)
     _save(fig, path)
+
+
+def lf_reference(path: Path, f: np.ndarray, raw_db: np.ndarray, fs: np.ndarray, applied_db: np.ndarray) -> None:
+    """The coax LF recess ratio 20·log10|R| at its BEM points, and the smoothed curve the de-embedding applies."""
+    fig, ax = plt.subplots(figsize=(9, 4.5))
+    ax.plot(f, raw_db, "o-", ms=3, lw=0.8, label="20·log10|R|, BEM (recess on a disc / flat piston on a disc)")
+    ax.plot(fs, applied_db, lw=2, label="1/3-octave smoothed, as applied to the LF reference")
+    ax.axhline(0.0, color="grey", lw=0.8)
+    _freq_axis(ax, fs, np.inf, "")
+    ax.set_ylabel("dB")
+    ax.set_title("Coax LF reference: the cone's own recess relative to a flat piston, on axis at 1 m")
+    ax.legend(loc="best", fontsize=8)
+    _save(fig, path)
