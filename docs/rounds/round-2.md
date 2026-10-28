@@ -179,7 +179,8 @@ check.
 
 ## Recommendation
 
-**n12-sq-m320.** It is the round 1 recommendation with 70 mm slots (was
+**n12-sq-m320.** The owner chose it over keeping round 1 (2026-10-28). It
+is the round 1 recommendation with 70 mm slots (was
 100 mm) centred 88 mm from the front (was 120 mm), 12 slots per side (was
 9), R ≈ 96 rayl (was 115), V = 16.0 L (was 16.5 L), and a 320 mm elliptical
 flare mouth (was 290 mm). Square edges, 330 mm wide, everything else
