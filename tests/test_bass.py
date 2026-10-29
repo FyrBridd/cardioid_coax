@@ -1,6 +1,7 @@
 import numpy as np, pytest
 from speaker.drivers import load_driver
-from speaker.bass import sealed_alignment, sealed_spl, max_spl, sealed_excursion
+from speaker.bass import sealed_alignment, sealed_spl, max_spl, sealed_excursion, sealed_impedance
+from speaker.curves import minimum_phase
 
 D = load_driver("dayton_rss265ho_44")
 
@@ -53,3 +54,19 @@ def test_max_spl_is_min_of_voltage_and_xmax_limits():
     out = max_spl(D, 0.03, f, 40.0, series_r=0.8)
     assert np.allclose(out, np.minimum(x_lim, v_lim))
     assert np.any(x_lim < v_lim) and np.any(v_lim < x_lim)  # both branches active over 20-300 Hz
+
+
+def test_sealed_impedance_peaks_at_fc():
+    f = np.geomspace(10, 1000, 2000)
+    z = sealed_impedance(D, 0.028, f)
+    assert f[np.argmax(np.abs(z))] == pytest.approx(sealed_alignment(D, 0.028).fc, rel=0.02)
+    assert D.re < abs(z[0]) < 1.5 * D.re  # well below fc the motional part is small
+
+
+def test_minimum_phase_reproduces_the_lumped_phase():
+    # validates the method used on the datasheet traces: impedance is minimum phase
+    f = np.geomspace(10, 20000, 48 * 11)
+    z = sealed_impedance(D, 0.028, f)
+    ph = minimum_phase(f, 20 * np.log10(np.abs(z)))
+    m = (f >= 30) & (f <= 300)
+    assert np.max(np.abs(np.degrees(ph[m] - np.angle(z[m])))) < 5.0

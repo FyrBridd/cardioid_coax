@@ -14,7 +14,8 @@ import re
 import shutil
 from pathlib import Path
 
-from .crossover import FixedCrossover
+from .crossover import ActiveCrossover, FixedCrossover, Peq, WayFilter
+from .xo_fit import WAYS, passive_warnings, peak_boost
 from .directivity_report import _CSS, COARSE, FINE, VENT_SPREAD, _row
 from .evaluate import SETTINGS, grid
 from .params import Params, load_params
@@ -328,27 +329,61 @@ def _gains(final_dir: Path) -> dict[str, float] | None:
     return g if isinstance(g, dict) else None
 
 
+def _fitted(final_dir: Path) -> tuple[ActiveCrossover, float] | None:
+    """The ActiveCrossover and the trusted limit (Hz) in crossover.json, or None when missing or unreadable."""
+    d = _read_json(final_dir / "crossover.json")
+    try:
+        ways = {k: WayFilter(float(w["gain_db"]), float(w["delay_s"]), int(w["polarity"]),
+                             tuple(Peq(float(p["f0"]), float(p["gain_db"]), float(p["q"])) for p in w["peq"]))
+                for k, w in d["ways"].items()}
+        xo = ActiveCrossover(float(d["bass_coax"]), float(d["lf_hf"]), ways, float(d["fit_top"]))
+        return xo, float(d["trusted_limit"])
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return None
+
+
 def _crossover(rd: _Round) -> str:
-    xo = FixedCrossover()
-    parts = ["<h2>Crossover</h2>",
-             f"<p>Fixed and provisional: acoustic LR4 at {xo.bass_coax:g} Hz (bass to coax) and {xo.lf_hf:g} Hz "
-             "(coax LF to HF). No EQ and no delays. Each way's gain matches its level at 23° to the coax LF way. "
-             "Plan 3 replaces this.</p>"]
-    rows, missing = [], []
+    fixed = FixedCrossover()
+    fitted, plain, missing = [], [], []
     for f in rd.finals:
         if f.get("status") != "ok":
             continue
-        g = _gains(rd.out_dir / f["dir"])
+        fdir = rd.out_dir / f["dir"]
+        got = _fitted(fdir)
+        if got is not None:
+            xo, tl = got
+            delays = ", ".join(f"{k} {xo.ways[k].delay_s * 1e3:.2f} ms" for k in WAYS)
+            npeq = ", ".join(f"{k} {len(xo.ways[k].peq)}" for k in WAYS)
+            boost = max(peak_boost(xo, k)[0] for k in WAYS)
+            fitted.append(_row([f"<td>{e(f['name'])}</td>", f'<td class="num">{xo.bass_coax:g} Hz</td>',
+                                f'<td class="num">{xo.lf_hf:g} Hz</td>', f"<td>{delays}</td>", f"<td>{npeq}</td>",
+                                f'<td class="num">{boost:.1f} dB</td>',
+                                f'<td class="num">{len(passive_warnings(xo, tl))}</td>']))
+            continue
+        g = _gains(fdir)
         if g is None:
             missing.append(f["name"])
         cell = lambda k: "n/a" if g is None or g.get(k) is None else f"{g[k]:+.2f} dB"  # noqa: E731
-        rows.append(_row([f"<td>{e(f['name'])}</td>"]
-                         + [f'<td class="num">{cell(k)}</td>' for k in ("bass", "coax_lf", "coax_hf")]))
+        plain.append(_row([f"<td>{e(f['name'])}</td>"]
+                          + [f'<td class="num">{cell(k)}</td>' for k in ("bass", "coax_lf", "coax_hf")]))
+    parts = ["<h2>Crossover</h2>"]
+    if fitted:
+        parts.append("<p>Active crossover fitted per final: acoustic LR4 at the two points, with per-way parametric "
+                     "EQ towards a flat 23° response, delays (relative) and polarity. The warnings count where a "
+                     "passive network could not follow (more than 6 dB of summed EQ boost, a coax LF to HF point "
+                     "within an octave of the 750 Hz HF resonance, a coax HF-LF delay over 0.1 ms, or EQ above the "
+                     "trusted limit); each final's report lists them.</p>"
+                     "<table><tr><th>Final</th><th>Bass to coax</th><th>Coax LF to HF</th><th>Delays</th>"
+                     "<th>PEQ filters</th><th>Largest boost</th><th>Warnings</th></tr>" + "".join(fitted) + "</table>")
+    if plain:
+        parts.append(f"<p>Fixed and provisional: acoustic LR4 at {fixed.bass_coax:g} Hz (bass to coax) and "
+                     f"{fixed.lf_hf:g} Hz (coax LF to HF). No EQ and no delays. Each way's gain matches its level "
+                     "at 23° to the coax LF way.</p>")
     if missing:
         parts.append(f"<p class='warn'>Way gains not found (no gains.json) for: {e(', '.join(missing))}.</p>")
-    if rows:
+    if plain:
         parts.append("<table><tr><th>Final</th><th>bass</th><th>coax_lf</th><th>coax_hf</th></tr>"
-                     + "".join(rows) + "</table>")
+                     + "".join(plain) + "</table>")
     return "".join(parts)
 
 

@@ -40,6 +40,7 @@ class VariantResult:
     tune: dict | None  # dataclasses.asdict(VentTune)
     tuned: bool
     wall_s: float
+    scoring: int = 1  # speaker.evaluate.SCORING_VERSION it was scored with; last, so older files load as 1
 
 
 @dataclass
@@ -71,7 +72,7 @@ def _margin(r: VariantResult) -> float | None:
     return None if m is None or not math.isfinite(m) else float(m)
 
 
-def _directivity_key(v: dict[str, float]) -> tuple[int, float, float]:
+def directivity_key(v: dict[str, float]) -> tuple[int, float, float]:
     return (math.floor((v["window_spread"] + v["presence_lift"]) / BUCKET_DB),
             v["di_smooth_bass"] + v["di_smooth_lfhf"], v["flat23"])
 
@@ -113,12 +114,12 @@ def rank(results: list[VariantResult], rank_by: str) -> Ranking:
     candidates = [x for x in rows if x[0] != REFERENCE]
     if candidates and not any(passes for _, _, passes in candidates):
         bar = max(v["cardioid_hard"] for _, v, _ in candidates) - GATE_UNMET_TOL_DB
-        near = sorted((x for x in rows if x[1]["cardioid_hard"] >= bar), key=lambda x: _directivity_key(x[1]))
+        near = sorted((x for x in rows if x[1]["cardioid_hard"] >= bar), key=lambda x: directivity_key(x[1]))
         rest = sorted((x for x in rows if x[1]["cardioid_hard"] < bar),
-                      key=lambda x: (-x[1]["cardioid_hard"], *_directivity_key(x[1])))
+                      key=lambda x: (-x[1]["cardioid_hard"], *directivity_key(x[1])))
         return Ranking([n for n, _, _ in near + rest], out, True)
     for name, v, passes in rows:
         if not passes:
             out[name] = f"fails the hard cardioid gate ({v['cardioid_hard']:.1f} dB)"
-    passing = sorted((x for x in rows if x[2]), key=lambda x: _directivity_key(x[1]))
+    passing = sorted((x for x in rows if x[2]), key=lambda x: directivity_key(x[1]))
     return Ranking([n for n, _, _ in passing], out, False)

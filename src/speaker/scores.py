@@ -14,7 +14,7 @@ from typing import Callable, Literal
 import numpy as np
 
 from speaker.bem.run import Observation
-from speaker.crossover import FixedCrossover
+from speaker.crossover import ActiveCrossover, FixedCrossover
 from speaker.curves import smooth
 from speaker.spinorama import P_REF_PEAK, Spin
 
@@ -209,7 +209,7 @@ _SPECS = [
 
 
 def score_all(f, total, coax_sec, obs: Observation, spin: Spin, *, trusted_limit: float,
-              xo: FixedCrossover, puck_blend: tuple[float, float] | None = None,
+              xo: FixedCrossover | ActiveCrossover, puck_blend: tuple[float, float] | None = None,
               coax_far: np.ndarray | None = None) -> list[Score]:
     """Every §4 score, one per key per confidence part wide enough (>= 1/3 octave).
 

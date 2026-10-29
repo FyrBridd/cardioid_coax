@@ -2,7 +2,19 @@ import numpy as np
 import pytest
 
 from speaker.bem.run import observation_set
-from speaker.crossover import FixedCrossover, apply_crossover, lr4
+from speaker.crossover import (
+    ActiveCrossover,
+    FixedCrossover,
+    Peq,
+    WayFilter,
+    apply_active,
+    apply_crossover,
+    biquad_response,
+    biquads,
+    lr4,
+    peq,
+    way_transfer,
+)
 from speaker.system import Ways
 
 
@@ -68,3 +80,44 @@ def test_fallback_gain_only_for_a_way_with_no_points_in_its_band():
     _, gains = apply_crossover(w, FixedCrossover(), fallback_db={"coax_hf": -7.0, "bass": 3.0})
     assert gains["coax_hf"] == -7.0
     assert gains["bass"] == pytest.approx(-6.02, abs=0.01)  # its band has points: matched, fallback unused
+
+
+def test_peq_has_its_gain_at_f0_and_none_far_away():
+    f = np.array([20.0, 2000.0, 20000.0])
+    h = peq(f, Peq(2000.0, -6.0, 2.0))
+    assert 20 * np.log10(abs(h[1])) == pytest.approx(-6.0, abs=1e-9)
+    assert abs(20 * np.log10(abs(h[0]))) < 0.05 and abs(20 * np.log10(abs(h[2]))) < 0.05
+
+
+def _flat_xo(**kw):
+    w = {k: WayFilter(0.0, 0.0, 1, ()) for k in ("bass", "coax_lf", "coax_hf")}
+    w.update(kw)
+    return ActiveCrossover(170.0, 1400.0, w, 20000.0)
+
+
+def test_active_without_eq_or_delay_matches_the_fixed_crossover():
+    o = observation_set(2.0)
+    f = np.geomspace(20, 20000, 200)
+    w = Ways(f, o, {k: np.ones((len(f), len(o.dirs)), complex) for k in ("bass", "coax_lf", "coax_hf")}, {})
+    fixed, _ = apply_crossover(w, FixedCrossover())
+    assert np.allclose(apply_active(w, _flat_xo()), fixed, atol=1e-12)
+
+
+def test_delay_and_polarity():
+    f = np.array([1000.0])
+    xo = _flat_xo(coax_hf=WayFilter(-3.0, 1e-4, -1, ()))
+    h = way_transfer(f, xo, "coax_hf") / lr4(f, 1400.0, "high")
+    assert abs(h[0]) == pytest.approx(10 ** (-3 / 20))
+    assert np.angle(h[0]) == pytest.approx(np.angle(-np.exp(-2j * np.pi * 1000.0 * 1e-4)))
+
+
+@pytest.mark.parametrize("fs, cerr, dberr", [(48000.0, 0.05, 0.2), (96000.0, 0.015, 0.05)])
+def test_biquads_match_the_analog_filters_below_5k(fs, cerr, dberr):
+    xo = _flat_xo(coax_hf=WayFilter(0.0, 0.0, 1, (Peq(2000.0, 6.0, 2.0),)))
+    f = np.geomspace(100, 5000, 50)
+    for way in ("bass", "coax_lf", "coax_hf"):
+        digital = np.prod([biquad_response(c, f, fs) for _, c in biquads(xo, fs)[way]], axis=0)
+        analog = way_transfer(f, xo, way)
+        assert np.max(np.abs(digital - analog)) / np.max(np.abs(analog)) < cerr
+        m = np.abs(analog) >= 0.1 * np.max(np.abs(analog))
+        assert np.max(np.abs(20 * np.log10(np.abs(digital[m] / analog[m])))) < dberr

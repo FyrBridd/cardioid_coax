@@ -3,9 +3,11 @@ import pytest
 from fakes import monopole_field, monopole_puck
 
 import speaker.evaluate as ev_mod
+from speaker.crossover import ActiveCrossover, FixedCrossover
 from speaker.bem.run import freq_grid
 from speaker.evaluate import SCREEN, SETTINGS, VENTS, EvalSettings, evaluate
 from speaker.params import DEFAULT_PATH, load_params
+from speaker.xo_fit import BASS_COAX_GRID, LF_HF_GRID
 
 
 @pytest.fixture(autouse=True)
@@ -32,8 +34,8 @@ def fake_fields(monkeypatch):
 
 def test_presets():
     assert SETTINGS == {"vents": VENTS, "screen": SCREEN}
-    assert VENTS == EvalSettings("vents", 120.0, 600.0, 12, 6.0, 0.05, None, True)
-    assert SCREEN == EvalSettings("screen", 120.0, None, 12, 5.0, 0.05, 4000.0, True)
+    assert VENTS == EvalSettings("vents", 120.0, 600.0, 12, 6.0, 0.05, None, True, False)
+    assert SCREEN == EvalSettings("screen", 120.0, None, 12, 5.0, 0.05, 4000.0, True, True)
 
 
 def test_screen_scores_are_all_trusted(tmp_path, fake_fields):
@@ -69,3 +71,12 @@ def test_vents_preset_has_no_puck_and_stops_at_600(tmp_path, fake_fields):
     assert {150.0, 300.0, 500.0} <= set(ev.f)
     assert ev.ways.meta["hf_reference"] != "puck"
     assert {s.confidence for s in ev.scores} == {"trusted"}
+
+
+def test_screen_fits_the_crossover_and_vents_does_not(tmp_path):
+    assert SCREEN.fit_crossover and not VENTS.fit_crossover
+    ev = evaluate(DEFAULT_PATH, SCREEN, trusted_limit=2851.0, tune=False, cache_dir=tmp_path)
+    assert isinstance(ev.xo, ActiveCrossover)
+    assert ev.xo.bass_coax in BASS_COAX_GRID and ev.xo.lf_hf in LF_HF_GRID
+    ev = evaluate(DEFAULT_PATH, VENTS, trusted_limit=2851.0, tune=False, cache_dir=tmp_path)
+    assert isinstance(ev.xo, FixedCrossover)
