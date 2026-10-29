@@ -109,7 +109,7 @@ the formula next to each score)*:
 | Flat at 23° horizontal | Deviation of the 23° response from a flat line, after the provisional crossover, over 150 Hz–16 kHz. Reported as max and RMS, in 1/3-octave bands. |
 | Within ±1 dB of 23° over 0–30° horizontal | For each horizontal angle from 0° to 30° in 5° steps, the worst deviation from the 23° curve, in 1/6-octave smoothing. Reported per band, with the band where ±1 dB holds. |
 | No 2–5 kHz elevation | For 0–30° horizontal and ±10° vertical: the largest amount any curve rises **above** the 23° curve's 2–5 kHz average, or above its own 1–2 kHz level. Any lift is flagged. Flat to slightly relaxed is acceptable. |
-| Smooth directivity through both crossovers | The sound-power DI and the early-reflections DI, with the listening window re-centred on 23°. Score: the largest deviation of each DI from a smooth fit, within one octave of each crossover point. |
+| Smooth directivity through both crossovers | The sound-power DI and the early-reflections DI, with the listening window re-centred on 23°. Score: the largest deviation of each DI from a smooth fit, over one fixed band per crossover: 75–500 Hz and 500 Hz–4 kHz, one octave either side of every point searched, so every crossover is judged on the same frequencies *(amended 2026-10-29 with the owner; it was one octave either side of the variant's own point)*. |
 | Smooth roll-off beyond 30° | The horizontal response at 40–90° is monotonic with angle in each 1/3-octave band. Bands that break this are flagged. |
 | Cardioid, hard | At least 10 dB rear (180°) rejection, 150–300 Hz. Pass/fail. |
 | Cardioid, aim | At least 6 dB, 300–500 Hz. Reported, with a warning if missed. |
@@ -121,7 +121,12 @@ the formula next to each score)*:
    out.
 2. The rest are ranked on the ±1 dB window and the 2–5 kHz check first,
    because these are the owner's stated priorities.
-3. DI smoothness and 23° flatness break ties.
+3. DI smoothness and 23° flatness break ties. A tie on step 2 is any
+   variant within 0.25 dB of the best one left *(amended 2026-10-29 with
+   the owner; it was fixed 0.25 dB buckets, which split values 0.02 dB
+   apart)*.
+4. A round's finals are re-ranked the same way on their own (finer mesh)
+   scores, and the best of them is the report's pick *(amended 2026-10-29)*.
 
 The ranking only decides the order. The recommendation is the builder's
 judgement, argued in the report from the curves.
@@ -214,7 +219,8 @@ still used to tune the vent resistance. Where the two disagree by more than
 - **Bass driver heights** and spacing from the coax, within the bass volume
   constraint.
 - **Crossover points:** bass-to-coax 150–250 Hz, and coax LF-to-HF
-  1.0–2.0 kHz.
+  1.0–2.0 kHz, never below the coax datasheet's recommended HF crossover
+  (1.2 kHz for the BMS 10C262) *(amended 2026-10-29 with the owner)*.
 
 Every parameter listed lives in `params/*.toml`, so a variant is just a
 params file. Parameters that don't exist yet are added there.
@@ -295,7 +301,11 @@ its own simulated responses *(my call)*:
   - Acoustic target slopes: Linkwitz-Riley 4th order, as a starting point.
   - Plus a delay per way.
   - Plus parametric EQ fitted to make the 23° response flat.
-  - The crossover points are searched within the ranges in §5.
+  - The crossover points are searched within the ranges in §5. Candidates
+    more than 1 dB below the best whole-system rear rejection (150–300 Hz)
+    are out; the rest are ranked as in §4 *(amended 2026-10-29 with the
+    owner: the search had ignored the rear rejection, the point of the
+    cardioid)*.
 - This is what the active-mode deliverable will be for the chosen design.
   It is exported as data: points, slopes, delays, EQ biquads in a plain
   table.
