@@ -1,8 +1,10 @@
 import numpy as np
 import pytest
 
+from speaker.bem.run import observation_set
 from speaker.crossover import Peq, peq
-from speaker.xo_fit import GAIN_RANGE, Q_RANGE, eq_band, fit_peq
+from speaker.system import Ways
+from speaker.xo_fit import BASS_COAX_GRID, GAIN_RANGE, LF_HF_GRID, Q_RANGE, eq_band, fit_active, fit_at, fit_peq
 
 
 def test_fit_removes_a_single_bump():
@@ -40,3 +42,35 @@ def test_a_single_bump_needs_one_filter():
     eq = fit_peq(f, db, 80.0, (500.0, 5000.0), 3)
     assert len(eq) == 1
     assert abs(eq[0].f0 - 1500) < 150 and eq[0].gain_db == pytest.approx(-5.0, abs=0.7)
+
+
+def omni_ways():
+    o = observation_set(2.0)
+    f = np.geomspace(50, 16000, 200)
+    return Ways(f, o, {k: np.ones((len(f), len(o.dirs)), complex) for k in ("bass", "coax_lf", "coax_hf")}, {})
+
+
+def test_alignment_recovers_a_known_delay_and_inverted_polarity():
+    w = omni_ways()
+    w.ways["coax_hf"] = -w.ways["coax_hf"] * np.exp(-2j * np.pi * w.f * 0.3e-3)[:, None]
+    xo = fit_at(w, 16000.0, 170.0, 1400.0)
+    lf, hf = xo.ways["coax_lf"], xo.ways["coax_hf"]
+    assert hf.polarity == -1
+    assert (lf.delay_s - hf.delay_s) == pytest.approx(0.3e-3, abs=0.02e-3)
+    assert min(x.delay_s for x in xo.ways.values()) == 0.0
+
+
+def test_flat_omni_ways_need_no_eq():
+    xo = fit_at(omni_ways(), 16000.0, 170.0, 1400.0)
+    assert all(x.peq == () for x in xo.ways.values())
+
+
+def test_search_stays_in_the_spec_ranges_and_returns_a_grid_point():
+    xo = fit_active(omni_ways(), 2851.0)
+    assert xo.bass_coax in BASS_COAX_GRID and xo.lf_hf in LF_HF_GRID
+
+
+def test_directivity_key_is_public():
+    from speaker.ranking import directivity_key
+    v = dict(window_spread=1.0, presence_lift=1.0, di_smooth_bass=0.5, di_smooth_lfhf=0.5, flat23=2.0)
+    assert directivity_key(v) == (8, 1.0, 2.0)

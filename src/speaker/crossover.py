@@ -41,23 +41,36 @@ def _has_points(f: np.ndarray, band: tuple[float, float]) -> bool:
     return bool(((f >= band[0]) & (f <= band[1])).any())
 
 
-def apply_crossover(
-    w: Ways, xo: FixedCrossover, *, fallback_db: dict[str, float] | None = None
-) -> tuple[np.ndarray, dict[str, float]]:
-    """Sum the filtered, level-matched ways: (nf, nd) complex total and per-way gains in dB.
+def ref_db(w: Ways) -> float:
+    """Level of the reference way at the listener direction: dB mean over its matching band."""
+    return _band_db(w.ways[REF_WAY][:, w.obs.at23_idx], w.f, MATCH_BANDS[REF_WAY])
 
-    Gains compare the unfiltered ways at the listener direction (dB mean over each band)
-    against the coax LF way. fallback_db gives the gain of a way whose matching band holds
-    no grid points; without one, such a way raises ValueError.
+
+def match_gains(w: Ways, fallback_db: dict[str, float] | None = None) -> dict[str, float]:
+    """Per-way gains in dB that match each unfiltered way at the listener direction (dB mean over
+    its band) to the coax LF way. fallback_db gives the gain of a way whose matching band holds no
+    grid points; without one, such a way raises ValueError.
     """
     f, i = w.f, w.obs.at23_idx
     fb = fallback_db or {}
-    ref = _band_db(w.ways[REF_WAY][:, i], f, MATCH_BANDS[REF_WAY])
+    ref = ref_db(w)
     gains = {
         k: fb[k] if k in fb and not _has_points(f, band) else ref - _band_db(w.ways[k][:, i], f, band)
         for k, band in MATCH_BANDS.items()
     }
     gains[REF_WAY] = 0.0
+    return gains
+
+
+def apply_crossover(
+    w: Ways, xo: FixedCrossover, *, fallback_db: dict[str, float] | None = None
+) -> tuple[np.ndarray, dict[str, float]]:
+    """Sum the filtered, level-matched ways: (nf, nd) complex total and per-way gains in dB.
+
+    Gains as match_gains gives them.
+    """
+    f = w.f
+    gains = match_gains(w, fallback_db)
     g = {k: 10 ** (v / 20) for k, v in gains.items()}
     filt = {
         "bass": lr4(f, xo.bass_coax, "low"),
