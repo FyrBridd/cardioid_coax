@@ -337,11 +337,17 @@ def test_full_run_end_to_end_on_stub_fields(tmp_path, monkeypatch):
     assert "rear rejection" in page   # the mesh check note says what was compared
     assert "times the recess ratio R" in page and "front-mounted on a large baffle" in page
     assert "R runs 300-3810 Hz" in page and "plots/lf_reference.png" in page
-    for png in ("polar_h", "polar_v", "spinorama", "window_family", "rear_rejection", "whole_rear", "lf_reference"):
+    for png in ("polar_h", "polar_v", "spinorama", "window_family", "rear_rejection", "whole_rear", "lf_reference",
+                "crossover_23"):
         assert (tmp_path / "plots" / f"{png}.png").stat().st_size > 0
+    cx = json.loads((tmp_path / "crossover.json").read_text())
+    assert f"{cx['bass_coax']:g} Hz" in page and f"{cx['lf_hf']:g} Hz" in page and "acoustic LR4 target" in page
+    assert "No EQ, no delays" not in page and "plots/crossover_23.png" in page
+    assert "crossover.txt" in page and "vituixcad/README.txt" in page and "Passive-network warnings" in page
     # A fast run in the same directory does not trust the full-run mesh check, and says why.
     page = dr.run_directivity(None, tmp_path, fast=True).read_text()
     assert "3000 Hz (unverified)" in page and "h_max" in page
+    assert "No EQ, no delays" in page and "crossover_23" not in page
     assert "piston of the HF exit" in page
     assert "flat piston (fast run)" in page and "recess ratio" not in page
 

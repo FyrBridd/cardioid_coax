@@ -77,3 +77,18 @@ def test_directivity_key_is_public():
     from speaker.ranking import directivity_key
     v = dict(window_spread=1.0, presence_lift=1.0, di_smooth_bass=0.5, di_smooth_lfhf=0.5, flat23=2.0)
     assert directivity_key(v) == (8, 1.0, 2.0)
+
+
+def test_passive_warnings():
+    from speaker.crossover import ActiveCrossover, WayFilter
+    from speaker.xo_fit import passive_warnings
+    eq = (Peq(3000.0, 8.0, 1.0),)
+    xo = ActiveCrossover(170.0, 1200.0, {"bass": WayFilter(0, 0, 1, ()), "coax_lf": WayFilter(0, 0.4e-3, 1, ()),
+                                         "coax_hf": WayFilter(-5, 0.0, 1, eq)}, 20000.0)
+    w = " ".join(passive_warnings(xo, 2851.0))
+    assert "coax_hf" in w and "8.0 dB" in w      # boost over 6 dB
+    assert "750 Hz" in w                          # 1.2 kHz is within an octave of the HF resonance
+    assert "0.40 ms" in w                         # LF-HF delay a passive network can't add
+    assert "3000 Hz" in w                         # PEQ above the trusted limit
+    flat = {k: WayFilter(0.0, 0.0, 1, ()) for k in ("bass", "coax_lf", "coax_hf")}
+    assert passive_warnings(ActiveCrossover(170.0, 1600.0, flat, 20000.0), 2851.0) == []

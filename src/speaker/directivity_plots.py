@@ -9,6 +9,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 
+from .curves import smooth  # noqa: E402
 from .report import FB_AIM_BAND, FB_AIM_DB, FB_BAND, FB_TARGET_DB, _save  # noqa: E402
 from .spinorama import Spin  # noqa: E402
 
@@ -136,4 +137,20 @@ def lf_reference(path: Path, f: np.ndarray, raw_db: np.ndarray, fs: np.ndarray, 
     ax.set_ylabel("dB")
     ax.set_title("Coax LF reference: the cone's own recess relative to a flat piston, on axis at 1 m")
     ax.legend(loc="best", fontsize=8)
+    _save(fig, path)
+
+
+def crossover_23(path: Path, f: np.ndarray, curves: dict[str, np.ndarray], tl: float, tl_text: str,
+                 blend: tuple[float, float] | None = None) -> None:
+    """Each way's level at 23° after its crossover filter, and the sum (the "sum" curve), 1/6-octave smoothed."""
+    fig, ax = plt.subplots(figsize=(9, 5.5))
+    sm = {name: smooth(f, y, 1 / 6) for name, y in curves.items()}
+    for name, y in sm.items():
+        ax.plot(f, y, **({"color": "k", "lw": 2} if name == "sum" else {"lw": 1.2}), label=name)
+    top = float(np.max(sm.get("sum", np.max(list(sm.values()), axis=0))))
+    ax.set_ylim(top - 40, top + 5)
+    ax.set_ylabel("dB SPL at 2 m, 2.83 V, 23°")
+    _freq_axis(ax, f, tl, tl_text, blend)
+    ax.legend(loc="lower left", fontsize=8)
+    ax.set_title("Each way at 23° after its crossover filter, and the sum")
     _save(fig, path)

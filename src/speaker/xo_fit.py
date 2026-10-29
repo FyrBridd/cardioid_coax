@@ -36,6 +36,10 @@ ALIGN_SMOOTH = 1 / 6  # octave
 SEARCH_KEYS = ("window_spread", "presence_lift", "di_smooth_bass", "di_smooth_lfhf", "flat23")
 EXPORT_FS = (48000.0, 96000.0)  # Hz, sample rates of the biquad export
 WAYS = ("bass", "coax_lf", "coax_hf")
+PASSIVE_BOOST_DB = 6.0  # dB, the most summed EQ boost a passive network can supply
+HF_RESONANCE_HZ = 750.0  # Hz, the coax HF resonance (main spec §6.1)
+HF_RESONANCE_OCT_HZ = 1500.0  # Hz, one octave above it: a lower lf_hf point sits too close
+PASSIVE_DELAY_S = 0.1e-3  # s, the most coax HF-to-LF delay a passive network can add
 
 
 def eq_band(way: str, fb: float, fh: float) -> tuple[float, float]:
@@ -195,3 +199,39 @@ def crossover_text(xo: ActiveCrossover, tl: float) -> str:
         for way, secs in biquads(xo, fs).items():
             out += ["\t".join([way, label, *(f"{c:.10g}" for c in coeffs)]) for label, coeffs in secs]
     return "\n".join(out) + "\n"
+
+
+def peak_boost(xo: ActiveCrossover, way: str) -> tuple[float, float]:
+    """The largest summed PEQ boost (dB, 0 for none) of a way in its eq_band, and the frequency (Hz) of it."""
+    lo, hi = eq_band(way, xo.bass_coax, xo.lf_hf)
+    if not xo.ways[way].peq or hi <= lo:
+        return 0.0, lo
+    g = np.geomspace(lo, hi, 400)
+    db = sum(20 * np.log10(np.abs(peq(g, p))) for p in xo.ways[way].peq)
+    k = int(np.argmax(db))
+    return max(float(db[k]), 0.0), float(g[k])
+
+
+def passive_warnings(xo: ActiveCrossover, tl: float) -> list[str]:
+    """Where a passive network could not follow this active crossover, one sentence each: a way whose summed
+    EQ boosts more than PASSIVE_BOOST_DB in its eq_band, lf_hf within an octave of the HF resonance, a coax
+    HF-LF delay over PASSIVE_DELAY_S, and any PEQ above the trusted limit tl."""
+    out = []
+    for way in WAYS:
+        boost, at = peak_boost(xo, way)
+        if boost > PASSIVE_BOOST_DB:
+            out.append(f"{way} needs {boost:.1f} dB of summed EQ boost at {at:.0f} Hz, more than a passive "
+                       f"network can supply ({PASSIVE_BOOST_DB:g} dB).")
+    if xo.lf_hf < HF_RESONANCE_OCT_HZ:
+        out.append(f"The coax LF to HF point, {xo.lf_hf:g} Hz, is within an octave of the {HF_RESONANCE_HZ:g} Hz "
+                   f"HF resonance (the limit is {HF_RESONANCE_OCT_HZ:g} Hz).")
+    dt = abs(xo.ways["coax_hf"].delay_s - xo.ways["coax_lf"].delay_s)
+    if dt > PASSIVE_DELAY_S:
+        out.append(f"The coax HF and LF delays differ by {dt * 1e3:.2f} ms, more than a passive "
+                   f"network can add ({PASSIVE_DELAY_S * 1e3:.1f} ms).")
+    for way in WAYS:
+        for p in xo.ways[way].peq:
+            if p.f0 > tl:
+                out.append(f"{way} has a {p.gain_db:+.1f} dB filter at {p.f0:.0f} Hz, above the trusted limit "
+                           f"{tl:.0f} Hz, so it rests on low-confidence data.")
+    return out

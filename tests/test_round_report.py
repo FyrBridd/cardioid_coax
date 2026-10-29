@@ -303,3 +303,24 @@ def test_base_label_names_the_reference_design(tmp_path):
               "the mesh check was run on the round 1 recommendation"):
         assert s in html, s
     assert "Round 0" not in html.replace("Round 0 final", "") and "round 0" not in html.replace("round 0&#x27;s mesh", "")
+
+
+def test_round_report_without_crossover_json_falls_back_to_gains(round_dir):
+    html = html_of(round_dir)
+    sec = html[html.index(">Crossover<"):html.index(">What I'd try next<")]
+    assert "<th>bass</th>" in sec and "-1.25 dB" in sec and "-3.50 dB" in sec
+    assert "crossover.json" not in sec and "Traceback" not in sec
+
+
+def test_round_report_shows_the_fitted_crossover(round_dir):
+    import dataclasses
+    from speaker.crossover import ActiveCrossover, Peq, WayFilter
+    xo = ActiveCrossover(190.0, 1600.0, {"bass": WayFilter(-1.0, 0.0, 1, (Peq(100.0, 2.0, 1.0),)),
+                                         "coax_lf": WayFilter(0.0, 0.25e-3, 1, ()),
+                                         "coax_hf": WayFilter(-3.0, 0.0, 1, (Peq(3500.0, 7.0, 1.0),))}, 16000.0)
+    put(round_dir / "finals" / "best" / "crossover.json", dataclasses.asdict(xo) | {"trusted_limit": 2851.0})
+    html = html_of(round_dir)
+    sec = html[html.index(">Crossover<"):html.index(">What I'd try next<")]
+    assert "190 Hz" in sec and "1600 Hz" in sec and "0.25 ms" in sec
+    assert "7.0 dB" in sec
+    assert "-3.50 dB" in sec   # the other final has no crossover.json and keeps its gains row

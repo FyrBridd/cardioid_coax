@@ -28,7 +28,7 @@ from .bem.run import (BAND_EDGES, CAB_H_COAX, CAB_H_VENT, PUCK_F_RANGE, SourceFi
 from .bem.solver import BEM_MEMORY_BUDGET, estimate_bytes
 from .cardioid import front_back, simulate
 from .constants import C
-from .crossover import MATCH_BANDS, ActiveCrossover, FixedCrossover
+from .crossover import MATCH_BANDS, ActiveCrossover, FixedCrossover, way_transfer
 from .curves import smooth
 from .drivers import Driver
 from .evaluate import CACHE_DIR, Design, banded, concat, grid, load_design, responses, ways_scores
@@ -38,7 +38,7 @@ from .report import FB_AIM_BAND, FB_BAND
 from .scores import LW_RING, REAR_H, ROLL_ANGLES, Score, score_all
 from .spinorama import P_REF_PEAK
 from .system import BLEND_MIN_OCT, PUCK_HOLD_F, V_DRIVE, coax_section, recess_db, vent_scaled_section
-from .xo_fit import crossover_text
+from .xo_fit import crossover_text, passive_warnings
 
 CAB_H_MAX = 0.05  # m, cabinet mesh size cap of the full run and the mesh check
 FULL_GRID = (50.0, 20000.0, 12)  # f_lo, f_hi, points per octave
@@ -330,6 +330,11 @@ def run_directivity(params_path: Path | None, out_dir: Path, *, fast: bool = Fal
                          f"x{VENT_SPREAD[0]:g}-x{VENT_SPREAD[1]:g}", title, far=far_rej)
     plots.whole_rear(plot_dir / "whole_rear.png", f[f <= min(f[-1], 2000.0)],
                      rej(total)[f <= min(f[-1], 2000.0)], xo.bass_coax)
+    if isinstance(xo, ActiveCrossover):
+        i23 = obs.at23_idx
+        cx = {k: _spl(way_transfer(f, xo, k) * ways.ways[k][:, i23]) for k in ("bass", "coax_lf", "coax_hf")}
+        cx["sum"] = _spl(total[:, i23])
+        plots.crossover_23(plot_dir / "crossover_23.png", f, cx, tl, tl_text, blend=blend)
     if rec is not None:
         fs = np.geomspace(rec[0][0], rec[0][-1], 200)
         plots.lf_reference(plot_dir / "lf_reference.png", rec[0], 20 * np.log10(np.abs(rec[1])), fs,
@@ -344,7 +349,7 @@ def run_directivity(params_path: Path | None, out_dir: Path, *, fast: bool = Fal
             json.dumps(_jsonable({**dataclasses.asdict(xo), "trusted_limit": tl}), indent=2, allow_nan=False))
         (out_dir / "crossover.txt").write_text(crossover_text(xo, tl))
     page = _html(d, fast=fast, mc=mc, mc_why=mc_why, tl_text=tl_text, scores=scores, gains=gains, xo=xo, ways=ways,
-                 vent=vent, cp=cp, max_diff=max_diff, fields={"cabinet": cab, "puck": puck}, lf_recess=rec,
+                 vent=vent, cp=cp, max_diff=max_diff, fields={"cabinet": cab, "puck": puck}, lf_recess=rec, tl=tl,
                  wall=time.perf_counter() - t0)
     path = out_dir / "report.html"
     path.write_text(page)
@@ -374,7 +379,41 @@ def _row(cells: list[str], cls: str = "") -> str:
     return f"<tr{f' class={cls!r}' if cls else ''}>" + "".join(cells) + "</tr>"
 
 
-def _html(d: Design, *, fast, mc, mc_why, tl_text, scores, gains, xo, ways, vent, cp, max_diff, fields, wall,
+def _crossover_section(xo, gains: dict[str, float], tl: float, fig) -> str:
+    if not isinstance(xo, ActiveCrossover):
+        return (
+            "<h2>Crossover</h2>"
+            f"<p>Fixed and provisional: acoustic LR4 at {xo.bass_coax:g} Hz (bass to coax) and {xo.lf_hf:g} Hz "
+            "(coax LF to HF). No EQ, no delays. Each way's gain matches its level at 23° to the coax LF way.</p>"
+            "<table><tr><th>Way</th><th>Gain</th><th>Matching band</th></tr>"
+            + "".join(_row([f"<td>{k}</td>", f'<td class="num">{gains[k]:+.2f} dB</td>',
+                            f'<td class="num">{MATCH_BANDS[k][0]:g}-{MATCH_BANDS[k][1]:g} Hz</td>'])
+                      for k in ("bass", "coax_lf", "coax_hf")) + "</table>")
+    rows = []
+    for k in ("bass", "coax_lf", "coax_hf"):
+        wf = xo.ways[k]
+        eq = "<br>".join(f"{p.f0:.0f} Hz, {p.gain_db:+.1f} dB, Q {p.q:.2f}"
+                         + (" (low confidence)" if p.f0 > tl else "") for p in wf.peq) or "none"
+        rows.append(_row([f"<td>{k}</td>", f'<td class="num">{wf.gain_db:+.2f} dB</td>',
+                          f'<td class="num">{wf.delay_s * 1e3:.2f} ms</td>',
+                          f'<td class="num">{wf.polarity:+d}</td>', f"<td>{eq}</td>"]))
+    warns = passive_warnings(xo, tl)
+    return (
+        "<h2>Crossover</h2>"
+        f"<p>Active crossover fitted to this design: bass to coax at {xo.bass_coax:g} Hz and coax LF to HF at "
+        f"{xo.lf_hf:g} Hz. The acoustic LR4 target is met at each point by the LR4 sections plus per-way "
+        "parametric EQ (towards a flat 23° response), a gain, a delay and a polarity. Delays are relative; "
+        f"EQ above the trusted limit ({tl:.0f} Hz) rests on low-confidence data.</p>"
+        "<table><tr><th>Way</th><th>Gain</th><th>Delay</th><th>Polarity</th><th>PEQ (f0, gain, Q)</th></tr>"
+        + "".join(rows) + "</table>"
+        + fig("crossover_23", "Each way at 23° after its crossover filter, and the sum, smoothed to 1/6 octave.")
+        + "<h3>Passive-network warnings</h3>"
+        + ("<ul>" + "".join(f"<li>{html.escape(w)}</li>" for w in warns) + "</ul>" if warns else "<p>none</p>")
+        + '<p>Setup sheet: <a href="crossover.txt">crossover.txt</a>; '
+          'VituixCAD: <a href="vituixcad/README.txt">vituixcad/README.txt</a>.</p>')
+
+
+def _html(d: Design, *, fast, mc, mc_why, tl, tl_text, scores, gains, xo, ways, vent, cp, max_diff, fields, wall,
           lf_recess=None) -> str:
     e = html.escape
     sha = _params_sha(d)
@@ -506,13 +545,7 @@ def _html(d: Design, *, fast, mc, mc_why, tl_text, scores, gains, xo, ways, vent
         "<table><tr><th>Score</th><th>Value</th><th>Unit</th><th>Status</th><th>Band</th><th>Confidence</th>"
         "<th>Formula</th></tr>" + "".join(srows) + "</table>",
         "<h2>Confidence</h2><ul>" + "".join(f"<li>{n}</li>" for n in notes) + "</ul>",
-        "<h2>Crossover</h2>",
-        f"<p>Fixed and provisional: acoustic LR4 at {xo.bass_coax:g} Hz (bass to coax) and {xo.lf_hf:g} Hz "
-        "(coax LF to HF). No EQ, no delays. Each way's gain matches its level at 23° to the coax LF way.</p>",
-        "<table><tr><th>Way</th><th>Gain</th><th>Matching band</th></tr>"
-        + "".join(_row([f"<td>{k}</td>", f'<td class="num">{gains[k]:+.2f} dB</td>',
-                        f'<td class="num">{MATCH_BANDS[k][0]:g}-{MATCH_BANDS[k][1]:g} Hz</td>'])
-                  for k in ("bass", "coax_lf", "coax_hf")) + "</table>",
+        _crossover_section(xo, gains, tl, fig),
         f"<h2>Run</h2><p>BEM bands (cached results keep their original times). Wall time {wall:.0f} s.</p>",
         "<table><tr><th>Field</th><th>Band edge</th><th>Freqs</th><th>h</th><th>Nodes</th><th>Elements</th>"
         "<th>Time</th></tr>" + "".join(run_rows) + "</table>",
