@@ -9,7 +9,8 @@ import numpy as np
 from scipy.optimize import least_squares
 
 from speaker.crossover import (
-    REF_WAY, ActiveCrossover, Peq, WayFilter, apply_active, biquads, match_gains, peq, ref_db, way_transfer,
+    REF_WAY, ActiveCrossover, Peq, WayFilter, apply_active, biquad_deviation, biquads, deviation_bands, match_gains,
+    peq, ref_db, way_transfer,
 )
 from speaker.curves import smooth
 from speaker.ranking import directivity_key
@@ -27,6 +28,7 @@ MIN_BAND_OCT = 1 / 3  # narrower bands get no EQ
 EQ_TOP = 16000.0  # Hz
 BASS_EQ_LO = 80.0  # Hz
 _EDGE = 1e-6  # keeps start values strictly inside the bounds
+TRUSTED_WEIGHTS = (1.0, 4.0, 16.0, 64.0)  # weights of the trusted part in the above-limit EQ fit, tried in turn
 
 BASS_COAX_GRID = (150.0, 170.0, 190.0, 210.0, 230.0, 250.0)  # Hz
 LF_HF_GRID = (1000.0, 1200.0, 1400.0, 1600.0, 1800.0, 2000.0)  # Hz
@@ -40,6 +42,9 @@ PASSIVE_BOOST_DB = 6.0  # dB, the most summed EQ boost a passive network can sup
 HF_RESONANCE_HZ = 750.0  # Hz, the coax HF resonance (main spec §6.1)
 HF_RESONANCE_OCT_HZ = 1500.0  # Hz, one octave above it: a lower lf_hf point sits too close
 PASSIVE_DELAY_S = 0.1e-3  # s, the most coax HF-to-LF delay a passive network can add
+BIQUAD_TOL_DB = 0.25  # dB, a 48 kHz cascade missing a way by more (trusted band or 2-5 kHz) recommends 96 kHz
+LIMIT_TOL_DB = 0.01  # dB, a PEQ gain this close to a GAIN_RANGE end is at the fitter's limit
+AT_LIMIT = "at the fitter's limit"
 
 
 def eq_band(way: str, fb: float, fh: float) -> tuple[float, float]:
@@ -53,6 +58,39 @@ def eq_band(way: str, fb: float, fh: float) -> tuple[float, float]:
 
 def _peq_db(f: np.ndarray, f0: float, gain_db: float, q: float) -> np.ndarray:
     return 20 * np.log10(np.abs(peq(f, Peq(f0, gain_db, q))))
+
+
+def _fit(fb: np.ndarray, r: np.ndarray, f0_lo: float, f0_hi: float, n: int, weight: np.ndarray,
+         done) -> tuple[Peq, ...]:
+    """Up to n peaking filters with f0 in [f0_lo, f0_hi] added one at a time at the worst residual r (dB on
+    fb) inside that range, all refitted jointly after each to minimise weight * (r + their dB); stops once
+    done(residual) holds. Filters weaker than MIN_GAIN are dropped; sorted by f0."""
+    llo, lhi = np.log(f0_lo), np.log(f0_hi)
+    lb1 = np.array([llo, GAIN_RANGE[0], np.log(Q_RANGE[0])])
+    ub1 = np.array([lhi, GAIN_RANGE[1], np.log(Q_RANGE[1])])
+    start = (fb >= f0_lo) & (fb <= f0_hi)
+
+    def total(x: np.ndarray) -> np.ndarray:
+        out = r.copy()
+        for i in range(len(x) // 3):
+            out += _peq_db(fb, float(np.exp(x[3 * i])), x[3 * i + 1], float(np.exp(x[3 * i + 2])))
+        return out
+
+    x = np.empty(0)
+    for k in range(1, n + 1):
+        rem = total(x)
+        j = int(np.argmax(np.where(start, np.abs(rem), -1.0)))
+        new = np.array([np.log(fb[j]), np.clip(-rem[j], *GAIN_RANGE), np.log(2.0)])
+        pad = _EDGE * (ub1 - lb1)
+        new = np.clip(new, lb1 + pad, ub1 - pad)
+        x0 = np.concatenate([x, new])
+        x = least_squares(lambda y: weight * total(y), x0, bounds=(np.tile(lb1, k), np.tile(ub1, k))).x
+        if done(total(x)):
+            break
+
+    eq = [Peq(float(np.exp(x[3 * i])), float(x[3 * i + 1]), float(np.exp(x[3 * i + 2])))
+          for i in range(len(x) // 3)]
+    return tuple(sorted((p for p in eq if abs(p.gain_db) >= MIN_GAIN), key=lambda p: p.f0))
 
 
 def fit_peq(
@@ -69,36 +107,43 @@ def fit_peq(
     if hi <= lo or np.log2(hi / lo) < MIN_BAND_OCT:
         return ()
     m = (f >= lo) & (f <= hi)
-    fb = f[m]
-    r = smooth(f, db, EQ_SMOOTH)[m] - ref
     if m.sum() < 2 or n < 1:
         return ()
+    r = smooth(f, db, EQ_SMOOTH)[m] - ref
+    return _fit(f[m], r, lo, hi, n, np.ones(int(m.sum())), lambda t: np.max(np.abs(t)) <= EQ_TOL_DB)
 
-    llo, lhi = np.log(lo), np.log(hi)
-    lb1 = np.array([llo, GAIN_RANGE[0], np.log(Q_RANGE[0])])
-    ub1 = np.array([lhi, GAIN_RANGE[1], np.log(Q_RANGE[1])])
 
-    def total(x: np.ndarray) -> np.ndarray:
-        out = r.copy()
-        for i in range(len(x) // 3):
-            out += _peq_db(fb, float(np.exp(x[3 * i])), x[3 * i + 1], float(np.exp(x[3 * i + 2])))
-        return out
+def fit_peq_above(
+    f: np.ndarray, db: np.ndarray, ref: float, band: tuple[float, float], tl: float, n: int
+) -> tuple[Peq, ...]:
+    """At most n peaking filters with f0 in (tl, band top] that bring smooth(f, db, EQ_SMOOTH) towards ref
+    over the part of band (clipped to f) above the trusted limit tl.
 
-    x = np.empty(0)
-    for k in range(1, n + 1):
-        rem = total(x)
-        j = int(np.argmax(np.abs(rem)))
-        new = np.array([np.log(fb[j]), np.clip(-rem[j], *GAIN_RANGE), np.log(2.0)])
-        pad = _EDGE * (ub1 - lb1)
-        new = np.clip(new, lb1 + pad, ub1 - pad)
-        x0 = np.concatenate([x, new])
-        x = least_squares(total, x0, bounds=(np.tile(lb1, k), np.tile(ub1, k))).x
-        if np.max(np.abs(total(x))) <= EQ_TOL_DB:
-            break
-
-    eq = [Peq(float(np.exp(x[3 * i])), float(x[3 * i + 1]), float(np.exp(x[3 * i + 2])))
-          for i in range(len(x) // 3)]
-    return tuple(sorted((p for p in eq if abs(p.gain_db) >= MIN_GAIN), key=lambda p: p.f0))
+    The trusted part of the band enters the residual too, as the change the new filters make there (its own
+    EQ is already fitted), weighted equally with the part above tl at first and by each of TRUSTED_WEIGHTS
+    in turn until the filters move every point of f at or below tl by less than EQ_TOL_DB; () if none does,
+    or when the part above tl spans less than MIN_BAND_OCT.
+    """
+    f = np.asarray(f, dtype=float)
+    lo, hi = max(band[0], f[0]), min(band[1], f[-1])
+    f0_lo = max(lo, tl * (1 + 1e-9))
+    if n < 1 or hi <= f0_lo or np.log2(hi / f0_lo) < MIN_BAND_OCT:
+        return ()
+    m = (f >= lo) & (f <= hi)
+    fb = f[m]
+    up = fb > tl
+    if up.sum() < 2:
+        return ()
+    r = np.where(up, smooth(f, db, EQ_SMOOTH)[m] - ref, 0.0)
+    ft = f[f <= tl]
+    for wt in TRUSTED_WEIGHTS:
+        eq = _fit(fb, r, f0_lo, hi, n, np.where(up, 1.0, wt), lambda t: np.max(np.abs(t[up])) <= EQ_TOL_DB)
+        if not eq:
+            return ()
+        moved = sum(_peq_db(ft, p.f0, p.gain_db, p.q) for p in eq)
+        if np.max(np.abs(moved), initial=0.0) < EQ_TOL_DB:
+            return eq
+    return ()
 
 
 def _smooth_cols(f: np.ndarray, db: np.ndarray, fraction: float) -> np.ndarray:
@@ -128,20 +173,34 @@ def _align(f: np.ndarray, h: np.ndarray, h_ref: np.ndarray, ref: float, fc: floa
     return best[1], best[2]
 
 
+def _clip(w: Ways, tl: float) -> Ways:
+    """w on its frequencies at or below tl: every way, and every meta array (or dict of them) on the grid."""
+    m = w.f <= tl
+    if m.all():
+        return w
+    n = len(w.f)
+
+    def cut(v):
+        if isinstance(v, np.ndarray) and v.ndim and v.shape[0] == n:
+            return v[m]
+        return {k: cut(x) for k, x in v.items()} if isinstance(v, dict) else v
+    return Ways(w.f[m], w.obs, {k: v[m] for k, v in w.ways.items()}, cut(w.meta))
+
+
 def fit_at(w: Ways, tl: float, fb: float, fh: float,
            fallback_db: dict[str, float] | None = None) -> ActiveCrossover:
-    """The active crossover at fixed points fb, fh: matched gains, per-way EQ towards the coax LF
-    band level at 23°, then the bass and the coax HF delay and polarity aligned to the coax LF way.
-    Delays are shifted so the smallest is 0."""
+    """The active crossover at fixed points fb, fh, from the data at or below the trusted limit tl only:
+    matched gains (each match band clipped to tl), per-way EQ towards the coax LF band level at 23°, then
+    the bass and the coax HF delay and polarity aligned to the coax LF way. Delays are shifted so the
+    smallest is 0. Nothing above tl enters it (spec §4); fit_above_limit adds the EQ above it."""
+    w = _clip(w, tl)
     f, i = w.f, w.obs.at23_idx
     gains = match_gains(w, fallback_db)
     ref = ref_db(w)
     ways = {}
     for k in ("bass", "coax_lf", "coax_hf"):
-        top = min(f[-1], tl) if k == "bass" else f[-1]
-        m = f <= top
-        db = 20 * np.log10(np.abs(w.ways[k][m, i])) + gains[k]
-        ways[k] = WayFilter(gains[k], 0.0, 1, fit_peq(f[m], db, ref, eq_band(k, fb, fh), N_PEQ[k]))
+        db = 20 * np.log10(np.abs(w.ways[k][:, i])) + gains[k]
+        ways[k] = WayFilter(gains[k], 0.0, 1, fit_peq(f, db, ref, eq_band(k, fb, fh), N_PEQ[k]))
     xo = ActiveCrossover(fb, fh, ways, float(f[-1]))
     h = {k: way_transfer(f, xo, k) * w.ways[k][:, i] for k in ways}
     d = {REF_WAY: 0.0}
@@ -152,17 +211,41 @@ def fit_at(w: Ways, tl: float, fb: float, fh: float,
     return replace(xo, ways={k: replace(v, delay_s=d[k] - d0, polarity=pol[k]) for k, v in ways.items()})
 
 
+def fit_above_limit(w: Ways, tl: float, xo: ActiveCrossover) -> ActiveCrossover:
+    """xo with low-confidence PEQs added above the trusted limit tl: for each coax way whose eq_band reaches
+    above tl, at most its remaining N_PEQ filters with f0 in (tl, band top] (fit_peq_above), fitted on the
+    data above tl at the way's gain and trusted EQ. They move the response at or below tl by less than
+    EQ_TOL_DB. Points, gains, delays, polarities and the trusted EQ are kept; fit_top becomes f[-1]."""
+    f, i = w.f, w.obs.at23_idx
+    if f[-1] <= tl:
+        return xo
+    ref = ref_db(_clip(w, tl))
+    ways = {}
+    for k, wf in xo.ways.items():
+        add: tuple[Peq, ...] = ()
+        n = N_PEQ[k] - len(wf.peq)
+        band = eq_band(k, xo.bass_coax, xo.lf_hf)
+        if k != "bass" and n > 0 and band[1] > tl:
+            db = 20 * np.log10(np.abs(w.ways[k][:, i])) + wf.gain_db
+            db = db + sum((_peq_db(f, p.f0, p.gain_db, p.q) for p in wf.peq), np.zeros(len(f)))
+            add = fit_peq_above(f, db, ref, band, tl, n)
+        ways[k] = replace(wf, peq=tuple(sorted(wf.peq + add, key=lambda p: p.f0)))
+    return replace(xo, ways=ways, fit_top=float(f[-1]))
+
+
 def fit_active(w: Ways, tl: float, fallback_db: dict[str, float] | None = None) -> ActiveCrossover:
-    """fit_at on every grid point pair; the candidate with the smallest directivity_key over its
-    trusted SEARCH_KEYS scores wins. Ties keep grid order (bass_coax outer, lf_hf inner)."""
+    """fit_at on every grid point pair, each scored on the data at or below tl; the candidate with the
+    smallest directivity_key over its trusted SEARCH_KEYS scores wins (ties keep grid order, bass_coax
+    outer, lf_hf inner). The winner then gets its EQ above tl (fit_above_limit)."""
+    wt = _clip(w, tl)
     best, best_key = None, None
     for fb in BASS_COAX_GRID:
         for fh in LF_HF_GRID:
-            xo = fit_at(w, tl, fb, fh, fallback_db)
-            total = apply_active(w, xo)
-            spin = spinorama(total, w.obs, f=w.f)
-            scores = score_all(w.f, total, coax_section(w), w.obs, spin, trusted_limit=tl, xo=xo,
-                               puck_blend=w.meta.get("puck_blend"), coax_far=w.meta.get("coax_far_h0_h180"))
+            xo = fit_at(wt, tl, fb, fh, fallback_db)
+            total = apply_active(wt, xo)
+            spin = spinorama(total, wt.obs, f=wt.f)
+            scores = score_all(wt.f, total, coax_section(wt), wt.obs, spin, trusted_limit=tl, xo=xo,
+                               puck_blend=wt.meta.get("puck_blend"), coax_far=wt.meta.get("coax_far_h0_h180"))
             v = {s.key: float(s.value) for s in scores
                  if s.confidence == "trusted" and s.key in SEARCH_KEYS and math.isfinite(s.value)}
             if len(v) < len(SEARCH_KEYS):
@@ -172,18 +255,60 @@ def fit_active(w: Ways, tl: float, fallback_db: dict[str, float] | None = None) 
                 best, best_key = xo, key
     if best is None:
         raise ValueError("no crossover candidate has all five trusted directivity scores")
+    return fit_above_limit(w, tl, best)
+
+
+def at_limit(p: Peq) -> bool:
+    """Whether p's gain sits at an end of GAIN_RANGE (within LIMIT_TOL_DB)."""
+    return min(abs(p.gain_db - g) for g in GAIN_RANGE) <= LIMIT_TOL_DB
+
+
+def max_boost(xo: ActiveCrossover) -> tuple[float, str, float]:
+    """The largest gain plus summed PEQ (dB) of any way over 20 Hz-20 kHz, its way and frequency (Hz)."""
+    g = np.geomspace(20.0, 20000.0, 2000)
+    best = (-math.inf, "", 0.0)
+    for way in WAYS:
+        wf = xo.ways[way]
+        db = wf.gain_db + sum((20 * np.log10(np.abs(peq(g, p))) for p in wf.peq), np.zeros(len(g)))
+        k = int(np.argmax(db))
+        if db[k] > best[0]:
+            best = (float(db[k]), way, float(g[k]))
     return best
 
 
-def crossover_text(xo: ActiveCrossover, tl: float) -> str:
+def biquad_advice(xo: ActiveCrossover, tl: float) -> tuple[dict[float, dict[str, dict[str, float]]], str]:
+    """biquad_deviation at every EXPORT_FS, and a recommendation ("" for none): use 96 kHz when the 48 kHz
+    cascade misses any way by more than BIQUAD_TOL_DB in the trusted band or in 2-5 kHz."""
+    dev = {fs: biquad_deviation(xo, fs, tl) for fs in EXPORT_FS}
+    worst = max(((v, way, band) for way, d in dev[48000.0].items() for band, v in d.items()
+                 if band in ("trusted", "2-5 kHz") and math.isfinite(v)), default=(0.0, "", ""))
+    if worst[0] <= BIQUAD_TOL_DB:
+        return dev, ""
+    return dev, (f"use 96 kHz: at 48 kHz the biquads miss the analog {worst[1]} way by up to {worst[0]:.2f} dB "
+                 f"({worst[2]}), more than {BIQUAD_TOL_DB:g} dB")
+
+
+def _num(v: float) -> str:
+    return f"{v:.2f}" if math.isfinite(v) else "-"
+
+
+def crossover_text(xo: ActiveCrossover, tl: float, *, design: str, sha: str) -> str:
     """The crossover as a DSP setup sheet: '#' comment lines, per way one tab-separated row each of
-    gain, delay_ms, polarity and every PEQ, then per EXPORT_FS sample rate the biquad sections."""
+    gain, delay_ms, polarity and every PEQ, then per EXPORT_FS sample rate the biquad sections and how far
+    they miss the analog ways. design and sha name the design file and the first characters of its sha256."""
+    boost, bway, bf = max_boost(xo)
+    dev, advice = biquad_advice(xo, tl)
     out = [
-        "# Active crossover",
+        "# Active crossover (SIMULATED design, not measured)",
+        f"# design file {design}, sha256 {sha}; trusted limit {tl:.0f} Hz",
         f"# points: bass to coax {xo.bass_coax:g} Hz, coax LF to HF {xo.lf_hf:g} Hz",
         "# acoustic target: LR4 at each point; the electrical filters are the LR4 sections plus per-way PEQ",
         "# delays are relative, the smallest is 0",
-        f"# PEQ above {tl:g} Hz rests on low-confidence data (marked low)",
+        "# gains are relative (coax LF 0 dB): normalise them in the DSP so the largest boost does not clip; "
+        f"the largest gain plus PEQ boost of any way is {boost:+.2f} dB ({bway} at {bf:.0f} Hz)",
+        f"# PEQ above {tl:.0f} Hz rests on low-confidence data (marked low); a PEQ marked {AT_LIMIT!r} has its "
+        f"gain at {GAIN_RANGE[0]:g} or {GAIN_RANGE[1]:+g} dB, where the fit stopped",
+        *([f"# recommendation: {advice}"] if advice else []),
         "# way\titem\tvalue: gain dB, delay ms, polarity +1/-1, peq f0 Hz, gain dB, Q",
     ]
     for way in WAYS:
@@ -191,11 +316,18 @@ def crossover_text(xo: ActiveCrossover, tl: float) -> str:
         out += [f"{way}\tgain\t{wf.gain_db:+.2f}", f"{way}\tdelay_ms\t{wf.delay_s * 1e3:.3f}",
                 f"{way}\tpolarity\t{wf.polarity:+d}"]
         out += ["\t".join([way, "peq", f"{p.f0:.1f}", f"{p.gain_db:+.2f}", f"{p.q:.3f}",
-                            *(["low"] if p.f0 > tl else [])]) for p in wf.peq]
+                            *(["low"] if p.f0 > tl else []), *([AT_LIMIT] if at_limit(p) else [])])
+                for p in wf.peq]
     for fs in EXPORT_FS:
+        bands = deviation_bands(fs, tl)
         out += ["", f"# fs = {fs:g}",
                 "# way\tlabel\tb0\tb1\tb2\ta1\ta2: H(z) = (b0 + b1 z^-1 + b2 z^-2) / (1 + a1 z^-1 + a2 z^-2), "
-                "in cascade per way; gain, delay and polarity are not in them"]
+                "in cascade per way; gain, delay and polarity are not in them",
+                "# some DSP tools (miniDSP-style) expect -a1 and -a2: negate those two columns for them",
+                f"# max |dB| these sections (with gain and polarity, no delay) miss the analog way by, where the "
+                f"analog way is within 20 dB of its peak ('-': none there):",
+                "# way\t" + "\t".join(f"{n} ({lo:.0f}-{hi:.0f} Hz)" for n, (lo, hi) in bands.items())]
+        out += ["# " + "\t".join([way, *(_num(dev[fs][way][n]) for n in bands)]) for way in WAYS]
         for way, secs in biquads(xo, fs).items():
             out += ["\t".join([way, label, *(f"{c:.10g}" for c in coeffs)]) for label, coeffs in secs]
     return "\n".join(out) + "\n"

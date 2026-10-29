@@ -80,6 +80,14 @@ the angle in degrees, for example "coax_lf hor -30.frd".
 
 Set every driver's X, Y and Z to 0. The positions are already in the phase.
 
+Listening distance
+The responses are at {r:g} m. Set VituixCAD's listening distance to {r:g} m to
+see the speaker as simulated, or to the distance of your seat. The distance
+changes how the bass and coax sum near their crossover, because the drivers'
+path lengths to the listener differ, so check the crossover at your seat
+distance before you settle on it. Keep driver X, Y and Z at 0 either way: the
+positions are in the phase.
+
 The data are at {r:g} m in free space, so do not add VituixCAD's own baffle or
 diffraction simulation. The cabinet's diffraction is already in the data.
 

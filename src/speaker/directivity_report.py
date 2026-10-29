@@ -13,6 +13,7 @@ import hashlib
 import html
 import json
 import math
+import shutil
 import subprocess
 import sys
 import time
@@ -28,7 +29,7 @@ from .bem.run import (BAND_EDGES, CAB_H_COAX, CAB_H_VENT, PUCK_F_RANGE, SourceFi
 from .bem.solver import BEM_MEMORY_BUDGET, estimate_bytes
 from .cardioid import front_back, simulate
 from .constants import C
-from .crossover import MATCH_BANDS, ActiveCrossover, FixedCrossover, way_transfer
+from .crossover import MATCH_BANDS, ActiveCrossover, FixedCrossover, deviation_bands, way_transfer
 from .curves import smooth
 from .drivers import Driver
 from .evaluate import CACHE_DIR, Design, banded, concat, grid, load_design, responses, ways_scores
@@ -39,7 +40,7 @@ from .scores import LW_RING, REAR_H, ROLL_ANGLES, Score, score_all
 from .spinorama import P_REF_PEAK
 from .system import BLEND_MIN_OCT, PUCK_HOLD_F, V_DRIVE, coax_section, recess_db, vent_scaled_section
 from .vituixcad import export_vituixcad
-from .xo_fit import crossover_text, passive_warnings
+from .xo_fit import AT_LIMIT, BIQUAD_TOL_DB, EXPORT_FS, at_limit, biquad_advice, crossover_text, passive_warnings
 
 CAB_H_MAX = 0.05  # m, cabinet mesh size cap of the full run and the mesh check
 FULL_GRID = (50.0, 20000.0, 12)  # f_lo, f_hi, points per octave
@@ -53,6 +54,7 @@ MAX_DEV_DB = 0.5  # mesh check: allowed |dB| change on refinement
 UNVERIFIED_LIMIT = 3000.0  # Hz, trusted limit without a mesh check
 VENT_SPREAD = (0.7, 1.3)  # vent resistance factors for the felt's unknown resistance
 LUMPED_DIFF_DB = 3.0  # report both cardioid models where they differ by more
+STALE_ON_FAST = ("crossover.json", "crossover.txt", "vituixcad")  # a full run's outputs a fast run removes
 _REPO = Path(__file__).resolve().parents[2]
 
 
@@ -261,7 +263,8 @@ def run_directivity(params_path: Path | None, out_dir: Path, *, fast: bool = Fal
 
     A full run fits the active crossover (speaker.xo_fit.fit_active) and scores through it, and writes it to
     crossover.json (its fields and the trusted limit) and crossover.txt (speaker.xo_fit.crossover_text);
-    a fast run keeps the fixed LR4 crossover and writes neither.
+    a fast run keeps the fixed LR4 crossover, writes neither, and removes STALE_ON_FAST (an earlier full run's
+    crossover files and VituixCAD export) from out_dir.
 
     trusted_limit (Hz, note) replaces the mesh check's limit and its header text; it is still capped
     to leave room for the cabinet-to-puck blend (_trusted_limit).
@@ -350,9 +353,16 @@ def run_directivity(params_path: Path | None, out_dir: Path, *, fast: bool = Fal
     if isinstance(xo, ActiveCrossover):
         (out_dir / "crossover.json").write_text(
             json.dumps(_jsonable({**dataclasses.asdict(xo), "trusted_limit": tl}), indent=2, allow_nan=False))
-        (out_dir / "crossover.txt").write_text(crossover_text(xo, tl))
+        (out_dir / "crossover.txt").write_text(crossover_text(xo, tl, design=d.path.name, sha=_params_sha(d)[:8]))
     if not fast:
         export_vituixcad(out_dir, ways, d, tl, tl_text)
+    else:  # a full run's sheet and exports would not match this report
+        for stale in STALE_ON_FAST:
+            p = out_dir / stale
+            if p.is_dir():
+                shutil.rmtree(p)
+            else:
+                p.unlink(missing_ok=True)
     page = _html(d, fast=fast, mc=mc, mc_why=mc_why, tl_text=tl_text, scores=scores, gains=gains, xo=xo, ways=ways,
                  vent=vent, cp=cp, max_diff=max_diff, fields={"cabinet": cab, "puck": puck}, lf_recess=rec, tl=tl,
                  wall=time.perf_counter() - t0)
@@ -384,6 +394,11 @@ def _row(cells: list[str], cls: str = "") -> str:
     return f"<tr{f' class={cls!r}' if cls else ''}>" + "".join(cells) + "</tr>"
 
 
+def _peq_flags(p, tl: float) -> str:
+    flags = [*(["low confidence"] if p.f0 > tl else []), *([AT_LIMIT] if at_limit(p) else [])]
+    return f" ({', '.join(flags)})" if flags else ""
+
+
 def _crossover_section(xo, gains: dict[str, float], tl: float, fig) -> str:
     if not isinstance(xo, ActiveCrossover):
         return (
@@ -398,11 +413,19 @@ def _crossover_section(xo, gains: dict[str, float], tl: float, fig) -> str:
     for k in ("bass", "coax_lf", "coax_hf"):
         wf = xo.ways[k]
         eq = "<br>".join(f"{p.f0:.0f} Hz, {p.gain_db:+.1f} dB, Q {p.q:.2f}"
-                         + (" (low confidence)" if p.f0 > tl else "") for p in wf.peq) or "none"
+                         + _peq_flags(p, tl) for p in wf.peq) or "none"
         rows.append(_row([f"<td>{k}</td>", f'<td class="num">{wf.gain_db:+.2f} dB</td>',
                           f'<td class="num">{wf.delay_s * 1e3:.2f} ms</td>',
                           f'<td class="num">{wf.polarity:+d}</td>', f"<td>{eq}</td>"]))
     warns = passive_warnings(xo, tl)
+    dev, advice = biquad_advice(xo, tl)
+    bands = deviation_bands(EXPORT_FS[0], tl)
+    head = "".join(f"<th>{n}</th>" for n in bands)
+    dev_rows = "".join(
+        _row([f"<td>{fs / 1000:g} kHz</td>", f"<td>{k}</td>",
+              *(f'<td class="num">{dev[fs][k][n]:.2f} dB</td>' if math.isfinite(dev[fs][k][n]) else "<td>-</td>"
+                for n in bands)])
+        for fs in EXPORT_FS for k in ("bass", "coax_lf", "coax_hf"))
     return (
         "<h2>Crossover</h2>"
         f"<p>Active crossover fitted to this design: bass to coax at {xo.bass_coax:g} Hz and coax LF to HF at "
@@ -412,6 +435,15 @@ def _crossover_section(xo, gains: dict[str, float], tl: float, fig) -> str:
         "<table><tr><th>Way</th><th>Gain</th><th>Delay</th><th>Polarity</th><th>PEQ (f0, gain, Q)</th></tr>"
         + "".join(rows) + "</table>"
         + fig("crossover_23", "Each way at 23° after its crossover filter, and the sum, smoothed to 1/6 octave.")
+        + "<h3>Digital biquads</h3>"
+          "<p>How far each way's biquad cascade in crossover.txt (with its gain and polarity, without the delay) "
+          "misses the analog filter, as the largest |dB| difference where the analog way is within 20 dB of its "
+          f"peak: trusted is 20 Hz to {tl:.0f} Hz, above 5 kHz runs to 20 kHz or 0.45 fs. '-': the way is more than "
+          "20 dB down there.</p>"
+          f"<table><tr><th>Sample rate</th><th>Way</th>{head}</tr>{dev_rows}</table>"
+        + (f"<p><b>Recommendation:</b> {html.escape(advice)}.</p>" if advice else
+           "<p>The 48 kHz sections follow the analog ways to within "
+           f"{BIQUAD_TOL_DB:g} dB in the trusted band and in 2-5 kHz.</p>")
         + "<h3>Passive-network warnings</h3>"
         + ("<ul>" + "".join(f"<li>{html.escape(w)}</li>" for w in warns) + "</ul>" if warns else "<p>none</p>")
         + '<p>Setup sheet: <a href="crossover.txt">crossover.txt</a>; '

@@ -412,6 +412,10 @@ def test_full_run_writes_the_crossover_files(tmp_path, monkeypatch):
     assert xo["bass_coax"] in BASS_COAX_GRID and xo["lf_hf"] in LF_HF_GRID
     txt = (tmp_path / "crossover.txt").read_text()
     assert "# fs = 48000" in txt and "# fs = 96000" in txt
+    import hashlib
+    sha = hashlib.sha256(DEFAULT_PATH.read_bytes()).hexdigest()[:8]
+    assert f"# design file {DEFAULT_PATH.name}, sha256 {sha}; trusted limit 2851 Hz" in txt
+    assert xo["fit_top"] > 2851.0
     assert sum(l.split("\t")[0] in ("bass", "coax_lf", "coax_hf") and "delay_ms" in l
                for l in txt.splitlines()) == 3
     assert (tmp_path / "gains.json").exists()
@@ -429,3 +433,30 @@ def test_crossover_plot_tolerates_a_way_without_data(tmp_path):
         plots.crossover_23(tmp_path / "x.png", f, {"bass": bass, "coax_lf": np.full(len(f), 80.0),
                                                    "sum": np.full(len(f), 82.0)}, 2851.0, "2851 Hz")
     assert (tmp_path / "x.png").stat().st_size > 0
+
+
+def test_a_fast_run_removes_a_full_runs_crossover_files(tmp_path, monkeypatch):
+    """A fast run keeps the fixed crossover, so a full run's sheet and exports would not match its report."""
+    _stub_fields(monkeypatch, [])
+    (tmp_path / "crossover.json").write_text("{}")
+    (tmp_path / "crossover.txt").write_text("old")
+    (tmp_path / "vituixcad").mkdir()
+    (tmp_path / "vituixcad" / "coax_lf hor 0.frd").write_text("old")
+    (tmp_path / "notes.txt").write_text("mine")
+    assert main(["directivity", "--fast", "--trusted-limit", "900", "--out", str(tmp_path)]) == 0
+    assert not (tmp_path / "crossover.json").exists() and not (tmp_path / "crossover.txt").exists()
+    assert not (tmp_path / "vituixcad").exists()
+    assert (tmp_path / "notes.txt").read_text() == "mine" and (tmp_path / "report.html").exists()
+
+
+def test_crossover_section_reports_biquad_deviation_and_limit_flags():
+    import speaker.directivity_report as dr
+    from speaker.crossover import ActiveCrossover, Peq, WayFilter
+    xo = ActiveCrossover(170.0, 1400.0, {"bass": WayFilter(4.0, 1.25e-3, -1, ()),
+                                         "coax_lf": WayFilter(0.0, 0.0, 1, (Peq(600.0, -15.0, 2.0),)),
+                                         "coax_hf": WayFilter(-3.0, 0.0, 1, (Peq(12800.0, 12.0, 0.65),))}, 20000.0)
+    page = dr._crossover_section(xo, xo.gains_db, 2851.0, lambda name, cap: "")
+    assert "600 Hz, -15.0 dB, Q 2.00 (at the fitter's limit)" in page
+    assert "12800 Hz, +12.0 dB, Q 0.65 (low confidence, at the fitter's limit)" in page
+    assert "48 kHz" in page and "96 kHz" in page and "2-5 kHz" in page
+    assert "use 96 kHz" in page

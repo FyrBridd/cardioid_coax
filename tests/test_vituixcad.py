@@ -98,3 +98,9 @@ def test_a_zero_in_a_set_is_refused(tmp_path, ways, d):
     w = Ways(f=ways.f, obs=ways.obs, ways={**ways.ways, "coax_lf": bad}, meta=ways.meta)
     with pytest.raises(ValueError, match=r"coax_lf .*\.frd: non-finite value at"):
         export_vituixcad(tmp_path, w, d, 2851.0, "2851 Hz (test)")
+
+
+def test_readme_says_where_to_listen_from(tmp_path, ways, d):
+    text = " ".join((export_vituixcad(tmp_path, ways, d, 2851.0, "2851 Hz (test)") / "README.txt").read_text().split())
+    assert "Listening distance" in text and "2 m" in text and "seat" in text
+    assert "bass and coax sum" in text and "X, Y and Z to 0" in text

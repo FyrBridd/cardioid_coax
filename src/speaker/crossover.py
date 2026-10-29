@@ -1,10 +1,12 @@
-"""Fixed provisional crossover: ideal acoustic LR4 at two frequencies, one gain per way.
+"""Crossovers: the fixed provisional one (ideal acoustic LR4 at two frequencies, one gain per way, no EQ
+and no delays) and the active one (LR4 sections, per-way gain, delay, polarity and parametric EQ, fitted by
+speaker.xo_fit), with its digital biquad sections and how far they miss the analog filters.
 
-e^{+jωt} convention, so s = j f/fc. No EQ and no delays.
+e^{+jωt} convention, so s = j f/fc.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 import numpy as np
@@ -177,3 +179,36 @@ def biquad_response(c: tuple[float, ...], f: np.ndarray, fs: float) -> np.ndarra
     """H(z) of one biquad (b0, b1, b2, a1, a2) at z = exp(j 2 pi f / fs)."""
     zi = np.exp(-2j * np.pi * np.asarray(f, dtype=float) / fs)
     return (c[0] + c[1] * zi + c[2] * zi**2) / (1 + c[3] * zi + c[4] * zi**2)
+
+
+DEVIATION_FLOOR_DB = -20.0  # dB re the analog way's peak: quieter frequencies are not compared
+DEVIATION_TOP = 20000.0  # Hz, and at most 0.45 fs
+
+
+def deviation_bands(fs: float, tl: float) -> dict[str, tuple[float, float]]:
+    """The bands (Hz) biquad_deviation reports, by name."""
+    return {"trusted": (20.0, tl), "2-5 kHz": (2000.0, 5000.0),
+            "above 5 kHz": (5000.0, min(DEVIATION_TOP, 0.45 * fs))}
+
+
+def biquad_deviation(xo: ActiveCrossover, fs: float, tl: float) -> dict[str, dict[str, float]]:
+    """Per way and deviation_bands band, the largest |dB| difference between the way's digital cascade at fs
+    (its biquads, gain and polarity) and way_transfer, both without the delay, at the frequencies where the
+    analog way is within DEVIATION_FLOOR_DB of its peak over 20 Hz to the top band's end. NaN where no
+    frequency of a band qualifies."""
+    bands = deviation_bands(fs, tl)
+    f = np.geomspace(20.0, bands["above 5 kHz"][1], 2000)
+    out: dict[str, dict[str, float]] = {}
+    for way, secs in biquads(xo, fs).items():
+        wf = xo.ways[way]
+        digital = wf.polarity * 10 ** (wf.gain_db / 20) * np.prod([biquad_response(c, f, fs) for _, c in secs], axis=0)
+        analog = way_transfer(f, replace(xo, ways={**xo.ways, way: replace(wf, delay_s=0.0)}), way)
+        a = np.abs(analog)
+        ok = a >= 10 ** (DEVIATION_FLOOR_DB / 20) * a.max()
+        err = np.abs(20 * np.log10(np.abs(digital[ok]) / a[ok]))
+        fo = f[ok]
+        out[way] = {}
+        for name, (lo, hi) in bands.items():
+            m = (fo >= lo) & (fo <= hi)
+            out[way][name] = float(err[m].max()) if m.any() else float("nan")
+    return out
