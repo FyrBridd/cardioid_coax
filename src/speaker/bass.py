@@ -53,6 +53,20 @@ def cone_velocity(
     return w, u
 
 
+def impedance_with_load(d: Driver, f, zbox: np.ndarray) -> np.ndarray:
+    """Electrical impedance Re + jωLe + Bl²/zm of one driver whose back load is the acoustic impedance zbox."""
+    w = 2 * np.pi * f
+    zm = 1j * w * d.mms + d.rms + 1.0 / (1j * w * d.cms) + d.sd**2 * zbox
+    return d.re + 1j * w * d.le + d.bl**2 / zm
+
+
+def sealed_impedance(d: Driver, vb: float, f) -> np.ndarray:
+    """Complex electrical impedance of one driver in a sealed box vb."""
+    f = _check_f(f)
+    zbox = 1.0 / (1j * 2 * np.pi * f * vb / (RHO * C**2))
+    return impedance_with_load(d, f, zbox)
+
+
 def sealed_spl(d, vb, f, v_rms, r=1.0, n_drivers=1, series_r=0.0) -> np.ndarray:
     f = _check_f(f)
     w, u = cone_velocity(d, vb, f, v_rms, series_r)

@@ -1,6 +1,7 @@
 import math, numpy as np, pytest
+from speaker.bass import sealed_impedance
 from speaker.drivers import load_driver
-from speaker.cardioid import CardioidParams, simulate, front_back, tune_resistance, polar
+from speaker.cardioid import CardioidParams, electrical_impedance, simulate, front_back, tune_resistance, polar
 
 D = load_driver("bms_10c262")
 F = np.geomspace(100, 1000, 200)
@@ -38,3 +39,9 @@ def test_polar_shape():
 def test_bad_frequency_raises():
     with pytest.raises(ValueError):
         simulate(D, P(100.0), np.array([0.0]), 2.83)
+
+
+def test_closed_chamber_matches_a_sealed_box():
+    f = np.geomspace(20, 2000, 100)
+    p = CardioidParams(0.016, 0.0168, 0.018, math.inf, ((0.0, 0.1, 0.0),), 12)
+    assert np.allclose(electrical_impedance(D, p, f), sealed_impedance(D, 0.016, f), rtol=1e-9)

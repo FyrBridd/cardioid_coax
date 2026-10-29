@@ -17,6 +17,7 @@ from typing import Literal
 import numpy as np
 from scipy.optimize import minimize_scalar
 
+from speaker.bass import impedance_with_load
 from speaker.constants import C, RHO
 from speaker.drivers import Driver
 
@@ -46,9 +47,8 @@ def _check_f(f) -> np.ndarray:
     return f
 
 
-def simulate(d: Driver, p: CardioidParams, f: np.ndarray, v_rms: float) -> CardioidResult:
-    f = _check_f(f)
-    w = 2 * np.pi * f
+def _chamber(p: CardioidParams, w: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """(zbox, yv): the chamber's acoustic impedance behind the cone and the vents' admittance."""
     cab = p.chamber_volume / (RHO * C**2)
     a = math.sqrt(p.vent_area / p.n_slots / math.pi)
     mv = RHO * (p.vent_length + 1.7 * a) / p.vent_area
@@ -57,7 +57,19 @@ def simulate(d: Driver, p: CardioidParams, f: np.ndarray, v_rms: float) -> Cardi
     else:
         rv = p.vent_resistance / p.vent_area
         yv = 1.0 / (rv + 1j * w * mv)
-    zbox = 1.0 / (1j * w * cab + yv)
+    return 1.0 / (1j * w * cab + yv), yv
+
+
+def electrical_impedance(d: Driver, p: CardioidParams, f) -> np.ndarray:
+    """Complex electrical impedance of the cone in its vented chamber."""
+    f = _check_f(f)
+    return impedance_with_load(d, f, _chamber(p, 2 * np.pi * f)[0])
+
+
+def simulate(d: Driver, p: CardioidParams, f: np.ndarray, v_rms: float) -> CardioidResult:
+    f = _check_f(f)
+    w = 2 * np.pi * f
+    zbox, yv = _chamber(p, w)
     ze = d.re + 1j * w * d.le
     zm = 1j * w * d.mms + d.rms + 1.0 / (1j * w * d.cms) + d.sd**2 * zbox + d.bl**2 / ze
     u = d.bl * v_rms / (ze * zm)
