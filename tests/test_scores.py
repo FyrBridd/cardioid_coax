@@ -1,6 +1,5 @@
 import numpy as np, pytest
 from speaker.bem.run import observation_set
-from speaker.crossover import FixedCrossover
 from speaker.scores import score_all
 from speaker.spinorama import spinorama
 
@@ -10,7 +9,7 @@ O = observation_set(2.0); F = np.geomspace(50, 16000, 300)
 def _run(pattern, coax_pattern=None, limit=3000.0):
     p = np.stack([pattern(O.dirs, f) for f in F]).astype(complex)
     c = p if coax_pattern is None else np.stack([coax_pattern(O.dirs, f) for f in F]).astype(complex)
-    return {s.key + "/" + s.confidence: s for s in score_all(F, p, c, O, spinorama(p, O), trusted_limit=limit, xo=FixedCrossover())}
+    return {s.key + "/" + s.confidence: s for s in score_all(F, p, c, O, spinorama(p, O), trusted_limit=limit)}
 
 
 def _az(d):
@@ -87,7 +86,7 @@ def _scores(pattern, coax_pattern=None, limit=3000.0, **kw):
     p = np.stack([pattern(O.dirs, f) for f in F]).astype(complex)
     c = p if coax_pattern is None else np.stack([coax_pattern(O.dirs, f) for f in F]).astype(complex)
     return {s.key + "/" + s.confidence: s
-            for s in score_all(F, p, c, O, spinorama(p, O), trusted_limit=limit, xo=FixedCrossover(), **kw)}
+            for s in score_all(F, p, c, O, spinorama(p, O), trusted_limit=limit, **kw)}
 
 
 def test_rejection_detail_names_the_worst_frequency():
@@ -121,3 +120,11 @@ def test_cardioid_hard_far_is_info_and_optional():
     assert r.value == pytest.approx(9.0) and r.status == "info" and r.band == (150.0, 300.0)
     assert r.detail["worst_hz"] == pytest.approx(F[np.argmin(np.abs(F - 200))])
     assert not any(k.startswith("cardioid_hard_far") for k in _scores(lambda d, f: np.ones(len(d))))
+
+
+def test_di_smoothness_bands_are_fixed_whatever_the_crossover():
+    """Every crossover candidate is judged on the same frequencies: 75-500 Hz and 500 Hz-4 kHz."""
+    sc = _scores(lambda d, f: 1.0 + (f / 4000.0) * d[:, 0], limit=2851.0)
+    assert sc["di_smooth_bass/trusted"].band == (75.0, 500.0)
+    assert sc["di_smooth_lfhf/trusted"].band == (500.0, 2851.0)
+    assert sc["di_smooth_lfhf/low"].band == (2851.0, 4000.0)

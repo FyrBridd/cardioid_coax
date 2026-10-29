@@ -31,7 +31,9 @@ from .xo_fit import fit_active
 
 CACHE_DIR = Path("out/cache/bem")
 SCORE_EDGES = (150.0, 300.0, 500.0, 2000.0, 5000.0)  # Hz, score band edges added to the output grids
-SCORING_VERSION = 2  # 1: the fixed crossover in every preset; 2: screens score through the fitted crossover
+# 1: the fixed crossover in every preset; 2: screens score through the fitted crossover; 3: DI smoothness on fixed
+# bands, and the crossover search keeps the best whole_rear, floors LF-HF at the driver's and ranks in tiers
+SCORING_VERSION = 3
 
 
 @dataclass
@@ -93,11 +95,13 @@ def responses(d: Design, cab: SourceField, puck: SourceField | None, f: np.ndarr
               ) -> tuple[Ways, np.ndarray, dict[str, float], Spin, FixedCrossover | ActiveCrossover]:
     """Ways, the crossed-over total, the way gains, the spinorama of d on the grid f and the crossover used.
 
-    xo None: the active crossover fitted to the ways (fit_active), whose gains are returned.
+    xo None: the active crossover fitted to the ways (fit_active, LF-HF no lower than the coax's hf_xo_min),
+    whose gains are returned.
     """
     ways = way_responses(d.p, d.coax, d.bass, d.layout, cab, puck, f, trusted_limit=tl, lf_recess=lf_recess)
     if xo is None:
-        used: FixedCrossover | ActiveCrossover = fit_active(ways, tl, fallback_db=_datasheet_fallback())
+        used: FixedCrossover | ActiveCrossover = fit_active(
+            ways, tl, fallback_db=_datasheet_fallback(), lf_hf_min=d.coax.hf_xo_min)
         total, gains = apply_active(ways, used), used.gains_db
     else:
         used = xo
@@ -105,10 +109,9 @@ def responses(d: Design, cab: SourceField, puck: SourceField | None, f: np.ndarr
     return ways, total, gains, spinorama(total, ways.obs, f=f), used
 
 
-def ways_scores(f: np.ndarray, ways: Ways, total: np.ndarray, spin: Spin, tl: float,
-                xo: FixedCrossover | ActiveCrossover) -> list[Score]:
+def ways_scores(f: np.ndarray, ways: Ways, total: np.ndarray, spin: Spin, tl: float) -> list[Score]:
     """score_all on the nominal coax section, with the run's puck blend and far field."""
-    return score_all(f, total, coax_section(ways), ways.obs, spin, trusted_limit=tl, xo=xo,
+    return score_all(f, total, coax_section(ways), ways.obs, spin, trusted_limit=tl,
                      puck_blend=ways.meta["puck_blend"], coax_far=ways.meta["coax_far_h0_h180"])
 
 
@@ -175,7 +178,7 @@ def evaluate(path: Path, settings: EvalSettings, *, trusted_limit: float, tune: 
 
     ways, total, gains, spin, xo = responses(d, cab, puck, f, tl, None if settings.fit_crossover else FixedCrossover(),
                                              lf_recess=rec)
-    scores = ways_scores(f, ways, total, spin, tl, xo)
+    scores = ways_scores(f, ways, total, spin, tl)
     bands = [{"field": name, **b} for name, fld in (("cabinet", cab), ("puck", puck)) if fld is not None
              for b in fld.meta["bands"]]
     return Evaluation(d, settings, f, ways, total, spin, scores, gains, xo, vt, tune, tl, bands,

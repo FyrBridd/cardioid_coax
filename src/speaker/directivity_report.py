@@ -299,13 +299,13 @@ def run_directivity(params_path: Path | None, out_dir: Path, *, fast: bool = Fal
     ways, total, gains, spin, xo = responses(d, cab, puck, f, tl, FixedCrossover() if fast else None, lf_recess=rec)
     obs, sec = ways.obs, coax_section(ways)
     blend, far = ways.meta["puck_blend"], ways.meta["coax_far_h0_h180"]
-    scores = ways_scores(f, ways, total, spin, tl, xo)
+    scores = ways_scores(f, ways, total, spin, tl)
 
     # Cardioid: the vent resistance spread (same fields), and the lumped model for comparison.
     cp = cardioid_params(d.p, d.layout, d.coax)
     spread = {s: vent_scaled_section(ways, cab, d.coax, cp, s) for s in VENT_SPREAD}
     spread_scores = {1.0: scores}
-    spread_scores.update({s: score_all(f, total, x, obs, spin, trusted_limit=tl, xo=xo, puck_blend=blend)
+    spread_scores.update({s: score_all(f, total, x, obs, spin, trusted_limit=tl, puck_blend=blend)
                           for s, x in spread.items()})
     vent = {k: {s: _trusted_value(sc, k) for s, sc in spread_scores.items()} for k in ("cardioid_hard", "cardioid_aim")}
     i0, i180 = _h(obs, 0), _h(obs, -180)

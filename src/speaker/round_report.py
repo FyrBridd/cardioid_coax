@@ -19,7 +19,7 @@ from .xo_fit import WAYS, passive_warnings, peak_boost
 from .directivity_report import _CSS, COARSE, FINE, VENT_SPREAD, _row
 from .evaluate import SETTINGS, grid
 from .params import Params, load_params
-from .ranking import DIRECTIVITY_KEYS, GATE_UNMET_TOL_DB, REFERENCE
+from .ranking import DIRECTIVITY_KEYS, GATE_UNMET_TOL_DB, REFERENCE, rank_directivity
 from .shape_drawing import draw_designs
 from .variants import RoundSpec
 
@@ -136,11 +136,18 @@ class _Round:
     def result(self, stage: dict, name: str) -> dict | None:
         return next((r for r in stage["results"] if r["name"] == name), None)
 
+    def ranked_finals(self) -> list[dict]:
+        """The finals that ran, best first on their own scores (rank_directivity); any it leaves out follow
+        in screen order."""
+        done = [f for f in self.finals if f.get("status") == "ok"]
+        order = rank_directivity([(f["name"], self.final_scores(f["name"]) or []) for f in done]).order
+        return sorted(done, key=lambda f: order.index(f["name"]) if f["name"] in order else len(order))
+
     def recommendation(self) -> tuple[str, str, int] | None:
-        """(name, params path relative to out_dir, rank) of the first final that ran, else the stage's best."""
-        for f in self.finals:
-            if f.get("status") == "ok":
-                return f["name"], f["params"], int(f["rank"])
+        """(name, params path relative to out_dir, screen rank) of the best final that ran, else the stage's
+        best."""
+        if ranked := self.ranked_finals():
+            return ranked[0]["name"], ranked[0]["params"], int(ranked[0]["rank"])
         if self.last:
             best = next((n for n in self.last["ranking"]["order"] if n != REFERENCE), None)
             if best:
@@ -227,7 +234,8 @@ def _recommendation(rd: _Round, notes: dict[str, str]) -> str:
         parts.append(f"<p class='fail'>The parameter files could not be read: {e(str(exc))}</p>")
         return "".join(parts)
     label = rd.spec.base_label
-    parts.append(f"<p>Recommended: <b>{e(name)}</b> (rank {rank}), against {e(label)}.</p>")
+    parts.append(f"<p>Recommended: <b>{e(name)}</b> (screen rank {rank}; the best final on its own scores), "
+                 f"against {e(label)}.</p>")
     parts.append(_dimensions(p1, p0, label))
     draw_designs(rd.out_dir / "shape.png", [(f"Recommendation: {name}", p1), (_cap(label), p0)])
     parts.append(f'<img src="shape.png" alt="front elevation and plan section: the recommendation and {e(label)}">'
@@ -261,11 +269,9 @@ def _scores(rd: _Round) -> str:
                      f"{e(', '.join(gated))}). They are ranked on directivity among the variants within "
                      f"{GATE_UNMET_TOL_DB:g} dB of the best rear rejection, then by rear rejection.</p>")
     rows: list[tuple[str, list[dict] | None]] = []
-    rec = rd.recommendation()
-    done = [f for f in rd.finals if f.get("status") == "ok"]
-    for f in done:
-        tag = "recommendation" if rec and f["name"] == rec[0] else f"runner-up {f['rank']}"
-        rows.append((f"{f['rank']}. {f['name']} ({tag})", rd.final_scores(f["name"])))
+    for k, f in enumerate(rd.ranked_finals(), 1):
+        tag = "recommendation" if k == 1 else "runner-up"
+        rows.append((f"{k}. {f['name']} ({tag}; screen rank {f['rank']})", rd.final_scores(f["name"])))
     if r0 := rd.round0_rescored():
         rows.append(r0)
     for c in rd.spec.compare:

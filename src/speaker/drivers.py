@@ -34,6 +34,7 @@ class Driver:
     cone_depth: float | None = None  # m, surround plane to cone inner edge
     cone_inner_d: float | None = None  # m
     hf_exit_d: float | None = None  # m
+    hf_xo_min: float | None = None  # Hz, the datasheet's recommended (lowest) HF crossover
 
     @property
     def qts(self) -> float:
@@ -89,4 +90,5 @@ def load_driver(stem: str) -> Driver:
         cone_depth=_opt_mm(raw, "cone_depth_mm"),
         cone_inner_d=_opt_mm(raw, "cone_inner_d_mm"),
         hf_exit_d=_opt_mm(raw, "hf_exit_d_mm"),
+        hf_xo_min=float(raw["hf_xo_min_hz"]) if "hf_xo_min_hz" in raw else None,
     )

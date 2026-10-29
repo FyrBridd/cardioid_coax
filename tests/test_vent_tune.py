@@ -2,7 +2,6 @@ import numpy as np
 import pytest
 from fakes import monopole_field
 
-from speaker.crossover import FixedCrossover
 from speaker.layout import compute_layout
 from speaker.scores import score_all
 from speaker.spinorama import spinorama
@@ -26,7 +25,7 @@ def test_tuned_hard_matches_the_score(design):
                          F_120_600, trusted_limit=600.0)
     sec = coax_section(ways)  # also passed as "total": only the cardioid rows are compared
     sc = score_all(F_120_600, sec, sec, cab.obs, spinorama(sec, cab.obs, f=F_120_600),
-                   trusted_limit=600.0, xo=FixedCrossover())
+                   trusted_limit=600.0)
     assert next(s.value for s in sc if s.key == "cardioid_hard") == pytest.approx(t.hard, abs=1e-6)
     assert next(s.value for s in sc if s.key == "cardioid_aim") == pytest.approx(t.aim, abs=1e-6)
 

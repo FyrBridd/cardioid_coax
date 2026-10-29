@@ -23,3 +23,9 @@ def test_unknown_driver():
 def test_driver_names():
     assert load_driver("dayton_rss265ho_44").name == "Dayton RSS265HO-44"
     assert load_driver("bms_10c262").name == "BMS 10C262"
+
+
+def test_coax_recommended_hf_crossover():
+    # BMS 10C262 datasheet, HF section: recommended crossover 1200 Hz
+    assert load_driver("bms_10c262").hf_xo_min == 1200.0
+    assert load_driver("dayton_rss265ho_44").hf_xo_min is None

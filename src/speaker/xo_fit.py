@@ -1,5 +1,5 @@
 """Active crossover fit: per-way parametric EQ towards a flat level, delay and polarity alignment,
-and the search over crossover points that minimises the directivity key."""
+and the search over crossover points: the best whole-system rear rejection, then directivity order."""
 from __future__ import annotations
 
 import math
@@ -13,7 +13,7 @@ from speaker.crossover import (
     peq, ref_db, way_transfer,
 )
 from speaker.curves import smooth
-from speaker.ranking import directivity_key
+from speaker.ranking import directivity_order
 from speaker.scores import score_all
 from speaker.spinorama import spinorama
 from speaker.system import Ways, coax_section
@@ -35,7 +35,8 @@ LF_HF_GRID = (1000.0, 1200.0, 1400.0, 1600.0, 1800.0, 2000.0)  # Hz
 BASS_DELAYS = np.arange(-3.0, 3.0001, 0.05) * 1e-3  # s
 HF_DELAYS = np.arange(-1.0, 1.0001, 0.01) * 1e-3  # s
 ALIGN_SMOOTH = 1 / 6  # octave
-SEARCH_KEYS = ("window_spread", "presence_lift", "di_smooth_bass", "di_smooth_lfhf", "flat23")
+SEARCH_KEYS = ("window_spread", "presence_lift", "di_smooth_bass", "di_smooth_lfhf", "flat23", "whole_rear")
+WHOLE_REAR_TOL_DB = 1.0  # dB, candidates further below the best whole_rear are out of the search
 EXPORT_FS = (48000.0, 96000.0)  # Hz, sample rates of the biquad export
 WAYS = ("bass", "coax_lf", "coax_hf")
 PASSIVE_BOOST_DB = 6.0  # dB, the most summed EQ boost a passive network can supply
@@ -233,29 +234,40 @@ def fit_above_limit(w: Ways, tl: float, xo: ActiveCrossover) -> ActiveCrossover:
     return replace(xo, ways=ways, fit_top=float(f[-1]))
 
 
-def fit_active(w: Ways, tl: float, fallback_db: dict[str, float] | None = None) -> ActiveCrossover:
-    """fit_at on every grid point pair, each scored on the data at or below tl; the candidate with the
-    smallest directivity_key over its trusted SEARCH_KEYS scores wins (ties keep grid order, bass_coax
-    outer, lf_hf inner). The winner then gets its EQ above tl (fit_above_limit)."""
+def pick(cands: list[tuple[object, dict[str, float]]]) -> object:
+    """The first of (candidate, SEARCH_KEYS values) pairs whose whole_rear is within WHOLE_REAR_TOL_DB of
+    the best, in directivity order. Ties keep the input order."""
+    best = max(v["whole_rear"] for _, v in cands)
+    keep = [c for c in cands if c[1]["whole_rear"] >= best - WHOLE_REAR_TOL_DB]
+    return directivity_order(keep, lambda c: c[1])[0][0]
+
+
+def fit_active(w: Ways, tl: float, fallback_db: dict[str, float] | None = None,
+               lf_hf_min: float | None = None) -> ActiveCrossover:
+    """fit_at on every grid point pair (lf_hf no lower than lf_hf_min, the driver's recommended HF
+    crossover), each scored on the data at or below tl; pick chooses among those with every trusted
+    SEARCH_KEYS score (ties keep grid order, bass_coax outer, lf_hf inner). The winner then gets its EQ
+    above tl (fit_above_limit)."""
+    lf_hf = [fh for fh in LF_HF_GRID if lf_hf_min is None or fh >= lf_hf_min]
+    if not lf_hf:
+        raise ValueError(f"no LF-HF grid point is at or above the driver's {lf_hf_min:g} Hz; "
+                         f"the grid stops at {LF_HF_GRID[-1]:g} Hz")
     wt = _clip(w, tl)
-    best, best_key = None, None
+    cands = []
     for fb in BASS_COAX_GRID:
-        for fh in LF_HF_GRID:
+        for fh in lf_hf:
             xo = fit_at(wt, tl, fb, fh, fallback_db)
             total = apply_active(wt, xo)
             spin = spinorama(total, wt.obs, f=wt.f)
-            scores = score_all(wt.f, total, coax_section(wt), wt.obs, spin, trusted_limit=tl, xo=xo,
+            scores = score_all(wt.f, total, coax_section(wt), wt.obs, spin, trusted_limit=tl,
                                puck_blend=wt.meta.get("puck_blend"), coax_far=wt.meta.get("coax_far_h0_h180"))
             v = {s.key: float(s.value) for s in scores
                  if s.confidence == "trusted" and s.key in SEARCH_KEYS and math.isfinite(s.value)}
-            if len(v) < len(SEARCH_KEYS):
-                continue
-            key = directivity_key(v)
-            if best_key is None or key < best_key:
-                best, best_key = xo, key
-    if best is None:
-        raise ValueError("no crossover candidate has all five trusted directivity scores")
-    return fit_above_limit(w, tl, best)
+            if len(v) == len(SEARCH_KEYS):
+                cands.append((xo, v))
+    if not cands:
+        raise ValueError(f"no crossover candidate has all {len(SEARCH_KEYS)} trusted search scores")
+    return fit_above_limit(w, tl, pick(cands))
 
 
 def at_limit(p: Peq) -> bool:
