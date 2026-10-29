@@ -90,8 +90,8 @@ def test_directivity_order_is_public():
 
 
 def test_search_floor_keeps_lf_hf_at_or_above_the_driver_recommendation():
-    assert _fitted(TL, "").lf_hf == 1200.0  # unfloored
-    assert fit_active(featured_ways(TL), TL, lf_hf_min=1400.0).lf_hf >= 1400.0
+    assert _fitted(TL, "").lf_hf == 1600.0  # unfloored
+    assert fit_active(featured_ways(TL), TL, lf_hf_min=1800.0).lf_hf >= 1800.0
     with pytest.raises(ValueError, match="2500 Hz"):
         fit_active(omni_ways(), TL, lf_hf_min=2500.0)
 
@@ -153,18 +153,19 @@ def _fitted(f_top: float, above: str):
 
 
 def test_a_fit_on_data_that_stop_at_the_trusted_limit_is_unchanged():
-    # pinned from the scoring version 3 search (fixed DI bands, whole_rear kept, tiers within 0.25 dB);
+    # pinned from the scoring version 3 search (fixed DI bands, bass from 120 Hz, whole_rear kept, tiers within 0.25 dB);
     # the screen grid stops at the trusted limit, so this is the fit every screen gets
     xo = _fitted(TL, "")
-    assert (xo.bass_coax, xo.lf_hf, xo.fit_top) == (170.0, 1200.0, pytest.approx(TL))
+    assert (xo.bass_coax, xo.lf_hf, xo.fit_top) == (170.0, 1600.0, pytest.approx(TL))
     want = {
-        "bass": (-7.405096501533659, 0.28e-3, 1, [(120.54775165837202, -12.988997629249576, 0.8843117411617827),
+        "bass": (-7.405096501533659, 0.15e-3, 1, [(120.54775165837202, -12.988997629249576, 0.8843117411617827),
                                                   (120.64398094464696, 11.999999999999998, 0.5000000000000001)]),
-        "coax_lf": (0.0, 0.03e-3, 1, [(230.98922326510552, 1.3374255810321363, 0.5000000000000001),
-                                      (588.6019176597978, -2.3538501253167565, 2.582469214128533),
-                                      (1802.3429614634094, 4.721497196638683, 1.7503527632306028)]),
-        "coax_hf": (10.961149650479925, 0.0, 1, [(2274.0777020732853, 7.476026499095086, 1.4270101975915872),
-                                                 (2318.8595191568024, -6.785969174602139, 0.5000000000000001)]),
+        "coax_lf": (0.0, 0.0, 1, [(226.54738993865544, 1.3398126562815094, 0.5000000000000001),
+                                  (590.1342936661375, -2.3503634702712537, 2.539103005796063),
+                                  (1813.2805195654096, 4.647246916340044, 1.6366165514562367)]),
+        "coax_hf": (10.961149650479925, 0.01e-3, 1, [(1600.0000000000014, -2.3315138960690103, 2.5216065096168148),
+                                                     (2271.1659110319065, 1.58066905241805, 3.1611612583276827),
+                                                     (2809.3328203508295, -1.511420260168743, 5.168117698023399)]),
     }
     for k, (g, d, pol, eq) in want.items():
         wf = xo.ways[k]

@@ -302,6 +302,22 @@ def test_finals_are_ranked_on_their_own_scores(round_dir):
         "2. best (runner-up; screen rank 1)")
 
 
+def test_a_final_without_its_own_scores_ranks_last_and_is_tagged_out(round_dir):
+    # no finals/best/scores.json: the screen scores must not stand in for it
+    (round_dir / "finals" / "best" / "scores.json").unlink()
+    html = html_of(round_dir)
+    assert "<b>stage-base</b> (screen rank 2; the best final on its own scores)" in html
+    assert "2. best (out: missing trusted score cardioid_hard; screen rank 1)" in html
+
+
+def test_no_final_scores_means_no_claim_about_them(round_dir):
+    for name in ("best", "stage-base"):
+        (round_dir / "finals" / name / "scores.json").unlink()
+    html = html_of(round_dir)
+    assert "<b>best</b> (screen rank 1), against" in html
+    assert "the best final on its own scores" not in html
+
+
 def test_base_label_names_the_reference_design(tmp_path):
     import dataclasses
     out = tmp_path / "r"

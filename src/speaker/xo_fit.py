@@ -236,7 +236,7 @@ def fit_above_limit(w: Ways, tl: float, xo: ActiveCrossover) -> ActiveCrossover:
 
 def pick(cands: list[tuple[object, dict[str, float]]]) -> object:
     """The first of (candidate, SEARCH_KEYS values) pairs whose whole_rear is within WHOLE_REAR_TOL_DB of
-    the best, in directivity order. Ties keep the input order."""
+    the best, in directivity order (ties as there)."""
     best = max(v["whole_rear"] for _, v in cands)
     keep = [c for c in cands if c[1]["whole_rear"] >= best - WHOLE_REAR_TOL_DB]
     return directivity_order(keep, lambda c: c[1])[0][0]
@@ -246,7 +246,7 @@ def fit_active(w: Ways, tl: float, fallback_db: dict[str, float] | None = None,
                lf_hf_min: float | None = None) -> ActiveCrossover:
     """fit_at on every grid point pair (lf_hf no lower than lf_hf_min, the driver's recommended HF
     crossover), each scored on the data at or below tl; pick chooses among those with every trusted
-    SEARCH_KEYS score (ties keep grid order, bass_coax outer, lf_hf inner). The winner then gets its EQ
+    SEARCH_KEYS score (input in grid order, bass_coax outer, lf_hf inner). The winner then gets its EQ
     above tl (fit_above_limit)."""
     lf_hf = [fh for fh in LF_HF_GRID if lf_hf_min is None or fh >= lf_hf_min]
     if not lf_hf:

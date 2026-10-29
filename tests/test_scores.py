@@ -123,8 +123,9 @@ def test_cardioid_hard_far_is_info_and_optional():
 
 
 def test_di_smoothness_bands_are_fixed_whatever_the_crossover():
-    """Every crossover candidate is judged on the same frequencies: 75-500 Hz and 500 Hz-4 kHz."""
+    """Every crossover candidate, screen or final, is judged on the same frequencies: 120-500 Hz (screens
+    start at 120 Hz) and 500 Hz-4 kHz."""
     sc = _scores(lambda d, f: 1.0 + (f / 4000.0) * d[:, 0], limit=2851.0)
-    assert sc["di_smooth_bass/trusted"].band == (75.0, 500.0)
+    assert sc["di_smooth_bass/trusted"].band == (120.0, 500.0)  # F starts at 50 Hz
     assert sc["di_smooth_lfhf/trusted"].band == (500.0, 2851.0)
     assert sc["di_smooth_lfhf/low"].band == (2851.0, 4000.0)

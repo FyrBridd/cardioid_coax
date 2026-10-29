@@ -10,7 +10,7 @@ If every ok variant other than round0 (a reference, not a candidate) fails the g
 set and all ok variants, round0 included, are still ranked, so the round has an order and a best to
 carry on. The best candidate's cardioid_hard (round0 excluded) sets the bar: every row whose
 cardioid_hard is no more than GATE_UNMET_TOL_DB below it counts as at the gate, and those rows come
-first, ordered by that key alone. The other rows follow, by cardioid_hard (descending) and then by
+first, in directivity order alone. The other rows follow, by cardioid_hard (descending) and then by
 directivity order. Ranking on raw cardioid_hard alone would let tenths of a dB of rear rejection decide the
 shape stage, with directivity only breaking exact float ties.
 """
@@ -82,7 +82,8 @@ def _margin(r: VariantResult) -> float | None:
 
 def directivity_order(items: Sequence[T], values: Callable[[T], dict[str, float]]) -> list[T]:
     """items best first: tiers of window_spread + presence_lift, each within BUCKET_DB of its best, then
-    di_smooth_bass + di_smooth_lfhf and flat23 inside a tier. Ties keep the input order."""
+    di_smooth_bass + di_smooth_lfhf and flat23 inside a tier. Ties break on window_spread + presence_lift,
+    then keep the input order."""
     def wp(x: T) -> float:
         v = values(x)
         return v["window_spread"] + v["presence_lift"]
@@ -125,7 +126,7 @@ def rank(results: list[VariantResult], rank_by: str) -> Ranking:
 
 
 def rank_directivity(rows: Sequence[tuple[str, list[dict]]]) -> Ranking:
-    """The directivity ranking (module docstring) of (name, Score dicts) rows. Ties keep the input order."""
+    """The directivity ranking (module docstring) of (name, Score dicts) rows; ties as in directivity_order."""
     out: dict[str, str] = {}
     vals = []  # (name, values, passes the gate)
     for name, scores in rows:

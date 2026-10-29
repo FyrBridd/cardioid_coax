@@ -22,8 +22,9 @@ FULL = (150.0, 16000.0)
 LW_RING = (0, 5, 10, 15, 20, 25, 30)  # H angles of the presence-lift LW curves
 ROLL_ANGLES = (40, 50, 60, 70, 80, 90)
 REAR_H = (*range(120, 180, 5), *range(-120, -185, -5))  # ring angles; 180 is the -180 entry
-# Hz, fc/2 to 2fc of every point speaker.xo_fit searches (150-250 Hz, 1-2 kHz): one band for every crossover
-DI_BANDS = {"di_smooth_bass": (75.0, 500.0), "di_smooth_lfhf": (500.0, 4000.0)}
+# Hz, fc/2 to 2fc of every point speaker.xo_fit searches (150-250 Hz, 1-2 kHz): one band for every crossover.
+# The bass band starts at 120 Hz, not 75, where the screen grid starts, so screens and finals score alike.
+DI_BANDS = {"di_smooth_bass": (120.0, 500.0), "di_smooth_lfhf": (500.0, 4000.0)}
 
 
 @dataclass
@@ -178,8 +179,8 @@ _SPECS = [
      "Over the LW curves (H 0-30 step 5 plus the two az 23 el +/-10 directions), each 1/6-octave smoothed: value = max "
      "over f in 2-5 kHz of max(c(f) - mean of c23 over the grid points in 2-5 kHz within this confidence part, c(f) - mean over 1-2 kHz of c). Warn if > 0.5 dB, else pass."),
     ("di_smooth_bass", "DI smoothness at bass-coax crossover", DI_BANDS["di_smooth_bass"], _di_smooth,
-     "For SPDI and ERDI over 75-500 Hz (fc/2 to 2fc of every bass-coax point the crossover search tries, the same "
-     "band whatever the crossover): the max |residual| from a least-squares line in log f. Value = the worse of "
+     "For SPDI and ERDI over 120-500 Hz (up to 2fc of every bass-coax point the crossover search tries, from "
+     "where the screen grid starts; the same band whatever the crossover): the max |residual| from a least-squares line in log f. Value = the worse of "
      "the two. Info."),
     ("di_smooth_lfhf", "DI smoothness at LF-HF crossover", DI_BANDS["di_smooth_lfhf"], _di_smooth,
      "For SPDI and ERDI over 500 Hz-4 kHz (fc/2 to 2fc of every coax LF-HF point the crossover search tries, the "
