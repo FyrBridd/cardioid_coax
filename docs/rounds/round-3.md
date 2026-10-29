@@ -94,6 +94,11 @@ the trusted limit are identical, so it has no above-limit penalty like round
 
 ## Recommendation
 
+**Owner's decision (2026-10-29): keep the round 2 design, n12-sq-m320**
+(`params/round-2.toml`). bass260-580 was not taken up; its gain is 0.2 dB.
+
+My recommendation was:
+
 **bass260-580**: the round 2 recommendation with the bass driver centres at
 260 mm and 580 mm (were 200 mm and 520 mm). Everything else is unchanged.
 
