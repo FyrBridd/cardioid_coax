@@ -52,7 +52,7 @@ def _rows(path):
 
 
 def test_frd_names_are_unique_and_parseable(tmp_path, ways, d):
-    out = export_vituixcad(tmp_path, ways, d, 2851.0, "test")
+    out = export_vituixcad(tmp_path, ways, d, 2851.0, "2851 Hz (test)")
     names = sorted(p.name for p in out.glob("coax_lf *.frd"))
     assert len(names) == 72 + 71 == len(set(names))
     assert "coax_lf hor 180.frd" in names and "coax_lf hor -175.frd" in names
@@ -61,7 +61,7 @@ def test_frd_names_are_unique_and_parseable(tmp_path, ways, d):
 
 
 def test_no_non_finite_values_and_bass_stops_at_the_limit(tmp_path, ways, d):
-    out = export_vituixcad(tmp_path, ways, d, 2851.0, "test")
+    out = export_vituixcad(tmp_path, ways, d, 2851.0, "2851 Hz (test)")
     assert len(list(out.glob("*.frd"))) == 5 * 143
     for p in out.glob("*.frd"):
         vals = _rows(p)
@@ -71,13 +71,13 @@ def test_no_non_finite_values_and_bass_stops_at_the_limit(tmp_path, ways, d):
 
 
 def test_level_and_phase(tmp_path, ways, d):
-    out = export_vituixcad(tmp_path, ways, d, 2851.0, "test")
+    out = export_vituixcad(tmp_path, ways, d, 2851.0, "2851 Hz (test)")
     vals = _rows(out / "coax_hf hor 30.frd")
     assert np.allclose(vals[:, 1], 80.0, atol=1e-3) and np.allclose(vals[:, 2], 0.0, atol=0.01)
 
 
 def test_every_file_is_marked_simulated(tmp_path, ways, d):
-    out = export_vituixcad(tmp_path, ways, d, 2851.0, "test")
+    out = export_vituixcad(tmp_path, ways, d, 2851.0, "2851 Hz (test)")
     files = list(out.glob("*.frd")) + list(out.glob("*.zma"))
     assert sorted(p.name for p in out.glob("*.zma")) == ["bass_driver.zma", "bass_pair.zma", "coax_hf.zma", "coax_lf.zma"]
     assert (out / "README.txt").read_text().strip()
@@ -86,7 +86,15 @@ def test_every_file_is_marked_simulated(tmp_path, ways, d):
         assert first.startswith("*") and "SIMULATED" in first, p.name
     frd = (out / "coax_lf hor 0.frd").read_text().splitlines()
     assert all(l.startswith("*") for l in frd[:5]) and not frd[5].startswith("*")
-    assert "trusted below 2851 Hz (test)" in frd[4]
+    assert frd[4].count("trusted below 2851 Hz (test)") == 1 and "2851 Hz (2851" not in frd[4]
     for z in out.glob("*.zma"):
         rows = _rows(z)
         assert rows[0, 0] == ZMA_GRID[0] and rows[-1, 0] == ZMA_GRID[1] and np.isfinite(rows).all()
+
+
+def test_a_zero_in_a_set_is_refused(tmp_path, ways, d):
+    bad = ways.ways["coax_lf"].copy()
+    bad[7, :] = 0.0
+    w = Ways(f=ways.f, obs=ways.obs, ways={**ways.ways, "coax_lf": bad}, meta=ways.meta)
+    with pytest.raises(ValueError, match=r"coax_lf .*\.frd: non-finite value at"):
+        export_vituixcad(tmp_path, w, d, 2851.0, "2851 Hz (test)")

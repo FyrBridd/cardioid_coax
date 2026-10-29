@@ -56,8 +56,8 @@ def impedances(d: Design, f: np.ndarray) -> dict[str, np.ndarray]:
 
 _ZMA_NOTES = {
     "coax_lf": "the coax LF (BMS 10C262 low-frequency way) in its cardioid chamber. |Z|: lumped chamber model below "
-               "{lo:g} Hz, BMS datasheet trace above {hi:g} Hz, blended in dB between, where the two differ by about "
-               "{gap:.1f} dB. Phase: minimum phase from |Z|.",
+               "{lo:g} Hz, BMS datasheet trace above {hi:g} Hz, blended in dB between, where the two differ by up to "
+               "{gap:.1f} dB (mean {mean:.1f} dB). Phase: minimum phase from |Z|.",
     "coax_hf": "the coax HF (BMS 10C262 high-frequency way). |Z|: BMS datasheet trace, held flat beyond the trace's "
                "ends. Phase: minimum phase from |Z|.",
     "bass_driver": "one bass driver in the sealed box (lumped Thiele-Small model). Voice-coil inductance is a pure "
@@ -102,7 +102,7 @@ The coax LF set includes both vents. The bass sets stop at the trusted limit
 drivers in parallel at 2.83 V.
 
 Confidence
-The simulation is trusted below {tl:g} Hz ({tl_text}). Above that it has low
+The simulation is trusted below {tl_text}. Above that it has low
 confidence: the cone and flare are estimated there.
 
 Impedances (.zma)
@@ -114,8 +114,12 @@ each file says how it was made and where it is limited.
 
 def _write_frd(path: Path, head: list[str], f: np.ndarray, p: np.ndarray, r: float) -> None:
     p = p * np.exp(2j * np.pi * f * r / C)  # remove the common flight time
-    db = 20 * np.log10(np.abs(p) / P_REF_PEAK)
+    with np.errstate(divide="ignore"):
+        db = 20 * np.log10(np.abs(p) / P_REF_PEAK)
     deg = np.degrees(np.angle(p))
+    bad = ~(np.isfinite(db) & np.isfinite(deg))
+    if bad.any():
+        raise ValueError(f"{path.name}: non-finite value at {f[bad][0]:.4f} Hz")
     rows = "\n".join(f"{fi:.4f}\t{m:.3f}\t{q:.2f}" for fi, m, q in zip(f, db, deg))
     path.write_text("\n".join(head) + "\n" + rows + "\n")
 
@@ -137,7 +141,7 @@ def export_vituixcad(out_dir: Path, ways: Ways, d: Design, tl: float, tl_text: s
             f"{FRD_COMMENT} design file {d.path.name}, sha256 {sha}",
             f"{FRD_COMMENT} SPL dB re 20 uPa at {obs.r:g} m for 2.83 V RMS into the way, unfiltered, free space",
             f"{FRD_COMMENT} phase deg, common {obs.r:g} m flight time removed; rotation centre: the coax centre on the front face",
-            f"{FRD_COMMENT} trusted below {tl:g} Hz ({tl_text}); low confidence above",
+            f"{FRD_COMMENT} trusted below {tl_text}; low confidence above",
         ]
         for plane, angles, idx in planes:
             for a, i in zip(angles.astype(int), idx):
@@ -148,9 +152,10 @@ def export_vituixcad(out_dir: Path, ways: Ways, d: Design, tl: float, tl_text: s
     fz = np.geomspace(ZMA_GRID[0], ZMA_GRID[1], round(np.log2(ZMA_GRID[1] / ZMA_GRID[0]) * ZMA_GRID[2]) + 1)
     lump, sheet = _lf_models(d, fz)
     band = (fz >= LF_JOIN[0]) & (fz <= LF_JOIN[1])
-    gap = float(np.mean(np.abs(lump[band] - sheet[band]))) if band.any() else 0.0
+    diff = np.abs(lump[band] - sheet[band])
+    gap, mean = (float(diff.max()), float(diff.mean())) if band.any() else (0.0, 0.0)
     for name, z in impedances(d, fz).items():
-        note = _ZMA_NOTES[name].format(lo=LF_JOIN[0], hi=LF_JOIN[1], gap=gap)
+        note = _ZMA_NOTES[name].format(lo=LF_JOIN[0], hi=LF_JOIN[1], gap=gap, mean=mean)
         rows = "\n".join(f"{fi:.4f}\t{abs(zi):.3f}\t{np.degrees(np.angle(zi)):.2f}" for fi, zi in zip(fz, z))
         head = [f"{FRD_COMMENT} SIMULATED, not measured: electrical impedance, {note}",
                 f"{FRD_COMMENT} design file {d.path.name}, sha256 {sha}; columns: Hz, ohm, degrees"]
