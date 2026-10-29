@@ -9,7 +9,7 @@ import numpy as np
 from scipy.optimize import least_squares
 
 from speaker.crossover import (
-    REF_WAY, ActiveCrossover, Peq, WayFilter, apply_active, match_gains, peq, ref_db, way_transfer,
+    REF_WAY, ActiveCrossover, Peq, WayFilter, apply_active, biquads, match_gains, peq, ref_db, way_transfer,
 )
 from speaker.curves import smooth
 from speaker.ranking import directivity_key
@@ -34,6 +34,8 @@ BASS_DELAYS = np.arange(-3.0, 3.0001, 0.05) * 1e-3  # s
 HF_DELAYS = np.arange(-1.0, 1.0001, 0.01) * 1e-3  # s
 ALIGN_SMOOTH = 1 / 6  # octave
 SEARCH_KEYS = ("window_spread", "presence_lift", "di_smooth_bass", "di_smooth_lfhf", "flat23")
+EXPORT_FS = (48000.0, 96000.0)  # Hz, sample rates of the biquad export
+WAYS = ("bass", "coax_lf", "coax_hf")
 
 
 def eq_band(way: str, fb: float, fh: float) -> tuple[float, float]:
@@ -167,3 +169,29 @@ def fit_active(w: Ways, tl: float, fallback_db: dict[str, float] | None = None) 
     if best is None:
         raise ValueError("no crossover candidate has all five trusted directivity scores")
     return best
+
+
+def crossover_text(xo: ActiveCrossover, tl: float) -> str:
+    """The crossover as a DSP setup sheet: '#' comment lines, per way one tab-separated row each of
+    gain, delay_ms, polarity and every PEQ, then per EXPORT_FS sample rate the biquad sections."""
+    out = [
+        "# Active crossover",
+        f"# points: bass to coax {xo.bass_coax:g} Hz, coax LF to HF {xo.lf_hf:g} Hz",
+        "# acoustic target: LR4 at each point; the electrical filters are the LR4 sections plus per-way PEQ",
+        "# delays are relative, the smallest is 0",
+        f"# PEQ above {tl:g} Hz rests on low-confidence data (marked low)",
+        "# way\titem\tvalue: gain dB, delay ms, polarity +1/-1, peq f0 Hz, gain dB, Q",
+    ]
+    for way in WAYS:
+        wf = xo.ways[way]
+        out += [f"{way}\tgain\t{wf.gain_db:+.2f}", f"{way}\tdelay_ms\t{wf.delay_s * 1e3:.3f}",
+                f"{way}\tpolarity\t{wf.polarity:+d}"]
+        out += ["\t".join([way, "peq", f"{p.f0:.1f}", f"{p.gain_db:+.2f}", f"{p.q:.3f}",
+                            *(["low"] if p.f0 > tl else [])]) for p in wf.peq]
+    for fs in EXPORT_FS:
+        out += ["", f"# fs = {fs:g}",
+                "# way\tlabel\tb0\tb1\tb2\ta1\ta2: H(z) = (b0 + b1 z^-1 + b2 z^-2) / (1 + a1 z^-1 + a2 z^-2), "
+                "in cascade per way; gain, delay and polarity are not in them"]
+        for way, secs in biquads(xo, fs).items():
+            out += ["\t".join([way, label, *(f"{c:.10g}" for c in coeffs)]) for label, coeffs in secs]
+    return "\n".join(out) + "\n"

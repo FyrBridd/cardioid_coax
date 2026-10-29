@@ -28,7 +28,7 @@ from .bem.run import (BAND_EDGES, CAB_H_COAX, CAB_H_VENT, PUCK_F_RANGE, SourceFi
 from .bem.solver import BEM_MEMORY_BUDGET, estimate_bytes
 from .cardioid import front_back, simulate
 from .constants import C
-from .crossover import MATCH_BANDS, FixedCrossover
+from .crossover import MATCH_BANDS, ActiveCrossover, FixedCrossover
 from .curves import smooth
 from .drivers import Driver
 from .evaluate import CACHE_DIR, Design, banded, concat, grid, load_design, responses, ways_scores
@@ -38,6 +38,7 @@ from .report import FB_AIM_BAND, FB_BAND
 from .scores import LW_RING, REAR_H, ROLL_ANGLES, Score, score_all
 from .spinorama import P_REF_PEAK
 from .system import BLEND_MIN_OCT, PUCK_HOLD_F, V_DRIVE, coax_section, recess_db, vent_scaled_section
+from .xo_fit import crossover_text
 
 CAB_H_MAX = 0.05  # m, cabinet mesh size cap of the full run and the mesh check
 FULL_GRID = (50.0, 20000.0, 12)  # f_lo, f_hi, points per octave
@@ -101,7 +102,7 @@ _COMPARED = ("the 23° curve, listening window, early reflections and sound powe
 
 def _check_curves(d: Design, fld: SourceField) -> np.ndarray:
     """(n_curves, nf) dB curves the mesh check compares; NaN where a curve is not compared."""
-    ways, total, _, spin = responses(d, fld, None, fld.f, float(fld.f[-1]), FixedCrossover())
+    ways, total, _, spin, _ = responses(d, fld, None, fld.f, float(fld.f[-1]), FixedCrossover())
     obs, lv = fld.obs, _spl(total)
     sec = _spl(coax_section(ways))
     out_rej = (fld.f < REJ_BAND[0]) | (fld.f > REJ_BAND[1])
@@ -257,6 +258,10 @@ def run_directivity(params_path: Path | None, out_dir: Path, *, fast: bool = Fal
                     trusted_limit: tuple[float, str] | None = None) -> Path:
     """Simulate, score and plot the design; write out_dir/report.html, scores.json, gains.json (the way gains in dB) and plots/.
 
+    A full run fits the active crossover (speaker.xo_fit.fit_active) and scores through it, and writes it to
+    crossover.json (its fields and the trusted limit) and crossover.txt (speaker.xo_fit.crossover_text);
+    a fast run keeps the fixed LR4 crossover and writes neither.
+
     trusted_limit (Hz, note) replaces the mesh check's limit and its header text; it is still capped
     to leave room for the cabinet-to-puck blend (_trusted_limit).
     """
@@ -287,8 +292,7 @@ def run_directivity(params_path: Path | None, out_dir: Path, *, fast: bool = Fal
         t1 = time.perf_counter()
         rec = recess_ratio(d.coax, cache_dir=CACHE_DIR)
         print(f"recess ratio: {len(rec[0])} frequencies, {time.perf_counter() - t1:.1f} s", file=sys.stderr, flush=True)
-    xo = FixedCrossover()
-    ways, total, gains, spin = responses(d, cab, puck, f, tl, xo, lf_recess=rec)
+    ways, total, gains, spin, xo = responses(d, cab, puck, f, tl, FixedCrossover() if fast else None, lf_recess=rec)
     obs, sec = ways.obs, coax_section(ways)
     blend, far = ways.meta["puck_blend"], ways.meta["coax_far_h0_h180"]
     scores = ways_scores(f, ways, total, spin, tl, xo)
@@ -335,6 +339,10 @@ def run_directivity(params_path: Path | None, out_dir: Path, *, fast: bool = Fal
         json.dumps(_jsonable([dataclasses.asdict(s) for s in scores]), indent=2, allow_nan=False))
     (out_dir / "gains.json").write_text(json.dumps(_jsonable({k: float(v) for k, v in gains.items()}), indent=2,
                                                    allow_nan=False))
+    if isinstance(xo, ActiveCrossover):
+        (out_dir / "crossover.json").write_text(
+            json.dumps(_jsonable({**dataclasses.asdict(xo), "trusted_limit": tl}), indent=2, allow_nan=False))
+        (out_dir / "crossover.txt").write_text(crossover_text(xo, tl))
     page = _html(d, fast=fast, mc=mc, mc_why=mc_why, tl_text=tl_text, scores=scores, gains=gains, xo=xo, ways=ways,
                  vent=vent, cp=cp, max_diff=max_diff, fields={"cabinet": cab, "puck": puck}, lf_recess=rec,
                  wall=time.perf_counter() - t0)

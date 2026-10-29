@@ -40,6 +40,7 @@ class VariantResult:
     tune: dict | None  # dataclasses.asdict(VentTune)
     tuned: bool
     wall_s: float
+    scoring: int = 1  # speaker.evaluate.SCORING_VERSION it was scored with; last, so older files load as 1
 
 
 @dataclass

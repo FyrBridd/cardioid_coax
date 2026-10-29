@@ -12,8 +12,8 @@ Layout of out_dir (default out/rounds/<number>):
     results.json                        every stage's results and ranking, the finals, the spec and its sha256
     report.html, shape.png, plots/      the round report (round_report.write_report); notes.md feeds it
 
-A result.json is reused when its params_sha256, settings and code_version match (an "error" result is
-always retried, as its cause may be transient), so a killed round
+A result.json is reused when its params_sha256, settings, code_version and scoring version match (an
+"error" result is always retried, as its cause may be transient), so a killed round
 resumes where it stopped; a partial write only ever leaves a result.json.<pid>.tmp, which is never read.
 """
 from __future__ import annotations
@@ -30,7 +30,7 @@ from pathlib import Path
 
 from .bem.run import code_version
 from .directivity_report import _jsonable, run_directivity
-from .evaluate import SETTINGS, evaluate
+from .evaluate import SCORING_VERSION, SETTINGS, evaluate
 from .ranking import REFERENCE, Ranking, VariantResult, rank
 from .round_report import write_report
 from .variants import REPO, RoundSpec, StageSpec, apply_overrides, load_round, read_raw, with_tuned, write_params
@@ -86,6 +86,7 @@ def _run_variant(vdir: Path, stage: StageSpec, name: str, overrides: dict, raw: 
     sha = _sha256(params)
     prev = _load_result(vdir / "result.json")
     if (prev is not None and (prev.params_sha256, prev.settings, prev.code_version) == (sha, stage.settings, cv)
+            and prev.scoring == SCORING_VERSION  # scored as this code scores: older results are re-scored
             and prev.status != "error"  # errors may be transient (memory, OpenCL): retry them
             and (prev.status != "ok" or (vdir / "params_tuned.toml").exists())):
         return prev, True
@@ -93,7 +94,7 @@ def _run_variant(vdir: Path, stage: StageSpec, name: str, overrides: dict, raw: 
     for stale in ("params_tuned.toml", "scores.json"):
         (vdir / stale).unlink(missing_ok=True)
     base = dict(name=name, stage=stage.name, overrides=overrides, params_sha256=sha, settings=stage.settings,
-                code_version=cv, commit=commit)
+                code_version=cv, commit=commit, scoring=SCORING_VERSION)
     t0 = time.perf_counter()
     try:
         ev = evaluate(params, SETTINGS[stage.settings], trusted_limit=spec.trusted_limit, tune=tune)

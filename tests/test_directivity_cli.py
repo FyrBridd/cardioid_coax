@@ -375,3 +375,34 @@ def test_frequency_axis_shades_the_puck_blend():
     x0, x1 = spans[0].get_x(), spans[0].get_x() + spans[0].get_width()
     assert (x0, x1) == pytest.approx((1902.7, 3805.0))
     plt.close(fig)
+
+
+def test_full_run_writes_the_crossover_files(tmp_path, monkeypatch):
+    import numpy as np
+    from fakes import monopole_field, monopole_puck
+    import speaker.directivity_report as dr
+    from speaker.bem.run import freq_grid
+    from speaker.params import DEFAULT_PATH
+    from speaker.xo_fit import BASS_COAX_GRID, LF_HF_GRID
+
+    def cab(p, coax, bass, f, *, per_wavelength, h_max, cache_dir, **kw):
+        return monopole_field(p, coax, bass, f)
+
+    def puck(p, coax, f, *, per_wavelength, cache_dir):
+        return monopole_puck(p, coax, f)
+
+    def recess(coax, f=None, *, per_wavelength=6.0, cache_dir=None):
+        f = freq_grid(300.0, 4000.0, 6) if f is None else np.asarray(f, float)
+        return f, np.ones(len(f), complex)
+
+    monkeypatch.setattr(dr, "cabinet_field", cab)
+    monkeypatch.setattr(dr, "puck_field", puck)
+    monkeypatch.setattr(dr, "recess_ratio", recess)
+    dr.run_directivity(DEFAULT_PATH, tmp_path, trusted_limit=(2851.0, "test"))
+    xo = json.loads((tmp_path / "crossover.json").read_text())
+    assert xo["bass_coax"] in BASS_COAX_GRID and xo["lf_hf"] in LF_HF_GRID
+    txt = (tmp_path / "crossover.txt").read_text()
+    assert "# fs = 48000" in txt and "# fs = 96000" in txt
+    assert sum(l.split("\t")[0] in ("bass", "coax_lf", "coax_hf") and "delay_ms" in l
+               for l in txt.splitlines()) == 3
+    assert (tmp_path / "gains.json").exists()

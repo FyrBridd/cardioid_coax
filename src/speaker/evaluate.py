@@ -3,6 +3,8 @@
 evaluate() runs a params file at an EvalSettings preset (a quick vent screen or a wider screen), with
 the vents tuned or as they stand. Every score it returns is trusted: the grid stops at the trusted
 limit, and the puck (when the preset has one) only sets the coax HF reference, with no blend.
+A preset with fit_crossover scores the design through the active crossover fitted to it
+(speaker.xo_fit.fit_active); the others use the fixed LR4 crossover.
 The design helpers and the shared response pipeline here are used by speaker.directivity_report too.
 """
 from __future__ import annotations
@@ -16,7 +18,7 @@ from pathlib import Path
 import numpy as np
 
 from .bem.run import BAND_EDGES, PUCK_F_RANGE, SourceField, cabinet_field, freq_grid, puck_field, recess_ratio
-from .crossover import MATCH_BANDS, FixedCrossover, apply_crossover
+from .crossover import MATCH_BANDS, ActiveCrossover, FixedCrossover, apply_active, apply_crossover
 from .curves import interp_db, load_curve
 from .drivers import Driver, load_driver
 from .layout import Layout, compute_layout
@@ -25,9 +27,11 @@ from .scores import Score, score_all
 from .spinorama import Spin, spinorama
 from .system import COAX_CURVES, Ways, coax_section, way_responses
 from .vent_tune import VentTune, tune_vents, with_vents
+from .xo_fit import fit_active
 
 CACHE_DIR = Path("out/cache/bem")
 SCORE_EDGES = (150.0, 300.0, 500.0, 2000.0, 5000.0)  # Hz, score band edges added to the output grids
+SCORING_VERSION = 2  # 1: the fixed crossover in every preset; 2: screens score through the fitted crossover
 
 
 @dataclass
@@ -85,16 +89,24 @@ def _datasheet_fallback() -> dict[str, float]:
 
 
 def responses(d: Design, cab: SourceField, puck: SourceField | None, f: np.ndarray, tl: float,
-              xo: FixedCrossover, lf_recess: tuple[np.ndarray, np.ndarray] | None = None,
-              ) -> tuple[Ways, np.ndarray, dict[str, float], Spin]:
-    """Ways, the crossed-over total, the way gains and the spinorama of d on the grid f."""
+              xo: FixedCrossover | None, lf_recess: tuple[np.ndarray, np.ndarray] | None = None,
+              ) -> tuple[Ways, np.ndarray, dict[str, float], Spin, FixedCrossover | ActiveCrossover]:
+    """Ways, the crossed-over total, the way gains, the spinorama of d on the grid f and the crossover used.
+
+    xo None: the active crossover fitted to the ways (fit_active), whose gains are returned.
+    """
     ways = way_responses(d.p, d.coax, d.bass, d.layout, cab, puck, f, trusted_limit=tl, lf_recess=lf_recess)
-    total, gains = apply_crossover(ways, xo, fallback_db=_datasheet_fallback())
-    return ways, total, gains, spinorama(total, ways.obs, f=f)
+    if xo is None:
+        used: FixedCrossover | ActiveCrossover = fit_active(ways, tl, fallback_db=_datasheet_fallback())
+        total, gains = apply_active(ways, used), used.gains_db
+    else:
+        used = xo
+        total, gains = apply_crossover(ways, xo, fallback_db=_datasheet_fallback())
+    return ways, total, gains, spinorama(total, ways.obs, f=f), used
 
 
 def ways_scores(f: np.ndarray, ways: Ways, total: np.ndarray, spin: Spin, tl: float,
-                xo: FixedCrossover) -> list[Score]:
+                xo: FixedCrossover | ActiveCrossover) -> list[Score]:
     """score_all on the nominal coax section, with the run's puck blend and far field."""
     return score_all(f, total, coax_section(ways), ways.obs, spin, trusted_limit=tl, xo=xo,
                      puck_blend=ways.meta["puck_blend"], coax_far=ways.meta["coax_far_h0_h180"])
@@ -110,10 +122,11 @@ class EvalSettings:
     h_max: float  # m, cabinet mesh size cap
     puck_top: float | None  # Hz; a puck from 500 Hz to here, used only for the HF reference
     recess: bool  # de-embed the coax LF datasheet with the recess ratio
+    fit_crossover: bool = False  # score through the fitted active crossover, not the fixed one
 
 
-VENTS = EvalSettings("vents", 120.0, 600.0, 12, 6.0, 0.05, None, True)
-SCREEN = EvalSettings("screen", 120.0, None, 12, 5.0, 0.05, 4000.0, True)
+VENTS = EvalSettings("vents", 120.0, 600.0, 12, 6.0, 0.05, None, True, False)
+SCREEN = EvalSettings("screen", 120.0, None, 12, 5.0, 0.05, 4000.0, True, True)
 SETTINGS = {"vents": VENTS, "screen": SCREEN}
 
 
@@ -127,6 +140,7 @@ class Evaluation:
     spin: Spin
     scores: list[Score]
     gains: dict
+    xo: FixedCrossover | ActiveCrossover  # the crossover used
     tune: VentTune
     tuned: bool
     trusted_limit: float
@@ -159,10 +173,10 @@ def evaluate(path: Path, settings: EvalSettings, *, trusted_limit: float, tune: 
         q = with_vents(d.p, vt.resistance, vt.net_volume)
         d = Design(d.path, d.text, q, d.coax, d.bass, compute_layout(q, d.coax, d.bass))
 
-    xo = FixedCrossover()
-    ways, total, gains, spin = responses(d, cab, puck, f, tl, xo, lf_recess=rec)
+    ways, total, gains, spin, xo = responses(d, cab, puck, f, tl, None if settings.fit_crossover else FixedCrossover(),
+                                             lf_recess=rec)
     scores = ways_scores(f, ways, total, spin, tl, xo)
     bands = [{"field": name, **b} for name, fld in (("cabinet", cab), ("puck", puck)) if fld is not None
              for b in fld.meta["bands"]]
-    return Evaluation(d, settings, f, ways, total, spin, scores, gains, vt, tune, tl, bands,
+    return Evaluation(d, settings, f, ways, total, spin, scores, gains, xo, vt, tune, tl, bands,
                       time.perf_counter() - t0)

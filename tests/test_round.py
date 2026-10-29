@@ -6,6 +6,7 @@ import pytest
 
 import speaker.round as round_mod
 from speaker.cli import main
+from speaker.evaluate import SCORING_VERSION
 from speaker.evaluate import load_design
 from speaker.round import run_round
 from speaker.scores import Score
@@ -174,6 +175,23 @@ def test_round_reruns_on_a_new_code_version(tmp_path, fake_eval, monkeypatch):
     run_round(spec(tmp_path), out)
     assert len(fake_eval.calls) == 8
     assert result(out, "vents", WINNER)["code_version"] == "cv2"
+
+
+def test_old_scoring_results_are_not_reused(tmp_path, fake_eval, capsys):
+    out = tmp_path / "out"
+    run_round(spec(tmp_path), out)
+    path = out / "shape" / "m280" / "result.json"
+    old = json.loads(path.read_text())
+    assert old["scoring"] == SCORING_VERSION
+    del old["scoring"]  # a result stored before the scoring version existed
+    path.write_text(json.dumps(old))
+    capsys.readouterr()
+    run_round(spec(tmp_path), out)
+    err = capsys.readouterr().err.splitlines()
+    line = next(x for x in err if x.startswith("[shape ") and "] m280:" in x)
+    assert "(reused)" not in line
+    assert result(out, "shape", "m280")["scoring"] == SCORING_VERSION
+    assert "(reused)" in next(x for x in err if x.startswith("[shape ") and "] m270:" in x)
 
 
 def test_round_reruns_a_variant_whose_params_changed(tmp_path, fake_eval):
