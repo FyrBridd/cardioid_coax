@@ -51,13 +51,16 @@ def omni_ways():
 
 
 def test_alignment_recovers_a_known_delay_and_inverted_polarity():
+    # the LR4 sections have phase of their own, so pin the delay added on top of the flat fit
+    xo0 = fit_at(omni_ways(), 16000.0, 170.0, 1400.0)
+    d0 = xo0.ways["coax_lf"].delay_s - xo0.ways["coax_hf"].delay_s
     w = omni_ways()
     w.ways["coax_hf"] = -w.ways["coax_hf"] * np.exp(-2j * np.pi * w.f * 0.3e-3)[:, None]
-    xo = fit_at(w, 16000.0, 170.0, 1400.0)
-    lf, hf = xo.ways["coax_lf"], xo.ways["coax_hf"]
-    assert hf.polarity == -1
-    assert (lf.delay_s - hf.delay_s) == pytest.approx(0.3e-3, abs=0.02e-3)
-    assert min(x.delay_s for x in xo.ways.values()) == 0.0
+    xo1 = fit_at(w, 16000.0, 170.0, 1400.0)
+    d1 = xo1.ways["coax_lf"].delay_s - xo1.ways["coax_hf"].delay_s
+    assert xo0.ways["coax_hf"].polarity == 1 and xo1.ways["coax_hf"].polarity == -1
+    assert d1 - d0 == pytest.approx(0.3e-3, abs=0.02e-3)
+    assert min(x.delay_s for x in xo1.ways.values()) == 0.0
 
 
 def test_flat_omni_ways_need_no_eq():
