@@ -412,3 +412,17 @@ def test_full_run_writes_the_crossover_files(tmp_path, monkeypatch):
     assert sum(l.split("\t")[0] in ("bass", "coax_lf", "coax_hf") and "delay_ms" in l
                for l in txt.splitlines()) == 3
     assert (tmp_path / "gains.json").exists()
+
+
+def test_crossover_plot_tolerates_a_way_without_data(tmp_path):
+    """The bass is zero above the trusted limit: its level is NaN or -inf there and must not reach log10."""
+    import warnings
+    import numpy as np
+    from speaker import directivity_plots as plots
+    f = np.geomspace(50, 4000, 120)
+    bass = np.where(f < 1000, 80.0, -np.inf)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        plots.crossover_23(tmp_path / "x.png", f, {"bass": bass, "coax_lf": np.full(len(f), 80.0),
+                                                   "sum": np.full(len(f), 82.0)}, 2851.0, "2851 Hz")
+    assert (tmp_path / "x.png").stat().st_size > 0

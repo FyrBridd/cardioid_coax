@@ -144,10 +144,14 @@ def crossover_23(path: Path, f: np.ndarray, curves: dict[str, np.ndarray], tl: f
                  blend: tuple[float, float] | None = None) -> None:
     """Each way's level at 23° after its crossover filter, and the sum (the "sum" curve), 1/6-octave smoothed."""
     fig, ax = plt.subplots(figsize=(9, 5.5))
-    sm = {name: smooth(f, y, 1 / 6) for name, y in curves.items()}
+    sm = {}
+    for name, y in curves.items():  # a way with no data (-inf or NaN) is left out there, not smoothed
+        ok = np.isfinite(y)
+        sm[name] = np.full(len(f), np.nan)
+        sm[name][ok] = smooth(f[ok], y[ok], 1 / 6)
     for name, y in sm.items():
         ax.plot(f, y, **({"color": "k", "lw": 2} if name == "sum" else {"lw": 1.2}), label=name)
-    top = float(np.max(sm.get("sum", np.max(list(sm.values()), axis=0))))
+    top = float(np.max(sm.get("sum", np.nanmax(list(sm.values()), axis=0))))
     ax.set_ylim(top - 40, top + 5)
     ax.set_ylabel("dB SPL at 2 m, 2.83 V, 23°")
     _freq_axis(ax, f, tl, tl_text, blend)

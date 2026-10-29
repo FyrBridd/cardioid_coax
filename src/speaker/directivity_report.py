@@ -332,7 +332,9 @@ def run_directivity(params_path: Path | None, out_dir: Path, *, fast: bool = Fal
                      rej(total)[f <= min(f[-1], 2000.0)], xo.bass_coax)
     if isinstance(xo, ActiveCrossover):
         i23 = obs.at23_idx
-        cx = {k: _spl(way_transfer(f, xo, k) * ways.ways[k][:, i23]) for k in ("bass", "coax_lf", "coax_hf")}
+        # A way's data can stop (the bass is exactly zero above the trusted limit): NaN there, not -inf.
+        cx = {k: _spl(np.where(np.abs(p) > 0, p, np.nan))
+              for k in ("bass", "coax_lf", "coax_hf") for p in [way_transfer(f, xo, k) * ways.ways[k][:, i23]]}
         cx["sum"] = _spl(total[:, i23])
         plots.crossover_23(plot_dir / "crossover_23.png", f, cx, tl, tl_text, blend=blend)
     if rec is not None:
