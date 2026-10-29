@@ -56,7 +56,8 @@ class Ways:
     # puck_blend: (lo, hi) Hz of the cabinet -> puck crossfade (lo = trusted limit), None without a puck
     # or when f stops at the trusted limit;
     # coax_far_h0_h180: (nf, 2) coax section at FAR_R on H 0° and 180°, NaN above the trusted
-    # limit, None when the cabinet field has no far-field points
+    # limit, None when the cabinet field has no far-field points;
+    # bass_each: the two bass drivers' terms of the bass way, "bass_lower" and "bass_upper": (nf, nd) complex peak Pa
     meta: dict
 
 
@@ -310,7 +311,8 @@ def way_responses(
     # Bass: two drivers in parallel at 2.83 V, each Sd·u (RMS -> peak), zero above tl.
     _, u = cone_velocity(bass, layout.bass_net / 2, f, V_DRIVE)
     u_bass = np.sqrt(2) * bass.sd * u
-    bass_way = u_bass[:, None] * (cab_on("bass_lower", f) + cab_on("bass_upper", f))
+    bass_each = {k: u_bass[:, None] * cab_on(k, f) for k in ("bass_lower", "bass_upper")}
+    bass_way = bass_each["bass_lower"] + bass_each["bass_upper"]
 
     return Ways(
         f=f, obs=cab.obs,
@@ -318,5 +320,5 @@ def way_responses(
         meta={"lf_join_mismatch_db": mismatch, "trusted_limit": tl, "u_lf": u_lf,
               "hf_reference": "puck" if puck is not None else "piston",
               "lf_reference": "recess" if lf_recess is not None else "piston",
-              "puck_blend": blend, "coax_far_h0_h180": far},
+              "puck_blend": blend, "coax_far_h0_h180": far, "bass_each": bass_each},
     )

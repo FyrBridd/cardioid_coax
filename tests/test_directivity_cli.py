@@ -344,6 +344,9 @@ def test_full_run_end_to_end_on_stub_fields(tmp_path, monkeypatch):
     assert f"{cx['bass_coax']:g} Hz" in page and f"{cx['lf_hf']:g} Hz" in page and "acoustic LR4 target" in page
     assert "No EQ, no delays" not in page and "plots/crossover_23.png" in page
     assert "crossover.txt" in page and "vituixcad/README.txt" in page and "Passive-network warnings" in page
+    vc = tmp_path / "vituixcad"
+    assert (vc / "README.txt").exists()
+    assert len(list(vc.glob("*.frd"))) == 5 * 143 and len(list(vc.glob("*.zma"))) == 4
     # A fast run in the same directory does not trust the full-run mesh check, and says why.
     page = dr.run_directivity(None, tmp_path, fast=True).read_text()
     assert "3000 Hz (unverified)" in page and "h_max" in page

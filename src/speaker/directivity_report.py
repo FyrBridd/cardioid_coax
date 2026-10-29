@@ -38,6 +38,7 @@ from .report import FB_AIM_BAND, FB_BAND
 from .scores import LW_RING, REAR_H, ROLL_ANGLES, Score, score_all
 from .spinorama import P_REF_PEAK
 from .system import BLEND_MIN_OCT, PUCK_HOLD_F, V_DRIVE, coax_section, recess_db, vent_scaled_section
+from .vituixcad import export_vituixcad
 from .xo_fit import crossover_text, passive_warnings
 
 CAB_H_MAX = 0.05  # m, cabinet mesh size cap of the full run and the mesh check
@@ -350,6 +351,8 @@ def run_directivity(params_path: Path | None, out_dir: Path, *, fast: bool = Fal
         (out_dir / "crossover.json").write_text(
             json.dumps(_jsonable({**dataclasses.asdict(xo), "trusted_limit": tl}), indent=2, allow_nan=False))
         (out_dir / "crossover.txt").write_text(crossover_text(xo, tl))
+    if not fast:
+        export_vituixcad(out_dir, ways, d, tl, tl_text)
     page = _html(d, fast=fast, mc=mc, mc_why=mc_why, tl_text=tl_text, scores=scores, gains=gains, xo=xo, ways=ways,
                  vent=vent, cp=cp, max_diff=max_diff, fields={"cabinet": cab, "puck": puck}, lf_recess=rec, tl=tl,
                  wall=time.perf_counter() - t0)

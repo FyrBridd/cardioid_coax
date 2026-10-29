@@ -242,3 +242,10 @@ def test_hf_reference_continues_as_piston_above_the_puck(design):
     # (+3 dB), not the puck's 4 kHz level held (which puts 8 kHz about 3.5 dB above the piston-only run).
     assert d_db[f == 8000.0][0] == pytest.approx(-3.0, abs=0.1)
     assert d_db[f == 2000.0][0] == pytest.approx(-3.0, abs=0.1)   # inside the puck's range
+
+
+def test_bass_each_sums_to_the_bass_way():
+    fld = _piston_field(F)
+    w = way_responses(P, CX, B, L, fld, fld, F, trusted_limit=3000.0)
+    each = w.meta["bass_each"]
+    assert np.allclose(each["bass_lower"] + each["bass_upper"], w.ways["bass"])
