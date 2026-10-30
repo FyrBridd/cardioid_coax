@@ -14,16 +14,19 @@ against that, the links were made two-pole, and every number below is from the r
 
 **Revised again before merging (owner's choice).** That rerun's bass network peaked at +4.7 dB at 54 Hz, below the
 100 Hz the fit looks at, and gave a 5 to 6 dB bass hump at 50 to 60 Hz. The fit now has two guards against that
-(item 8 below). The hump is gone, but the guards cost other things on these woofers, and one rule is now broken
-(item 8, "What it costs"). Every number below is from the run with the guards.
+(item 8 below). The hump went, but on these woofers the guards alone broke the bass stopband rule (item 8).
+
+**Revised a third time (owner chose the compensator).** The search now offers an impedance-peak compensator across
+the woofers (item 9). With it every rule holds: the floor, the stopband rule, the gain cap and the no-hump guard.
+Every number below is from the run with the compensator.
 
 ## What was run
 
-- **Code:** branch `FyrBridd/passive-xo`, commit `5565b51`. The BEM fields came from the cache, so there were no new
+- **Code:** branch `FyrBridd/passive-xo`, commit `d1a4a7b`. The BEM fields came from the cache, so there were no new
   solves. Outputs are not committed.
 - **Command:** `uv run speaker passive --params params/round-3.toml --out out/passive/round-3-design --trusted-limit 2851`.
-  It took 121 s and exited 0. The log is `out/passive/run.log`. `--trusted-limit` is now required: pass the trusted
-  limit of the directivity run.
+  It took about 2 minutes and exited 0. The log is `out/passive/run.log`. `--trusted-limit` is now required: pass the
+  trusted limit of the directivity run.
 - **Outputs** (`out/passive/round-3-design/`): `report.html`, `network.txt`, `parts.csv`, `semi_active.txt`,
   `scores.json`, `schematic_bass.svg`, `schematic_coax.svg`, `links.svg`, `vituixcad_netlist.txt` and `plots/`
   (now with `electrical.png`).
@@ -33,21 +36,21 @@ against that, the links were made two-pole, and every number below is from the r
 1. **The level is tied to the woofers'.** This is a soft target, not a hard rule. The fit's level is the weighted
    mean of the 23° response (1/3-octave smoothed) over 100 Hz to 10 kHz: weight 1 from 100 Hz to the trusted limit
    (2851 Hz), and 0.25 from there to 10 kHz. The fit is penalised when that level falls more than 1 dB under the
-   woofers' own level (80-150 Hz). **In this run it sits 1.0 dB under**, inside the 1 dB it may drop for free (the
-   run before the bass-peak guards sat 3.5 dB under). The sensitivity is measured differently (23°, 300-1000 Hz),
-   and is 0.5 dB under what the woofers give alone. A first preview run (not in this round's outputs) with the level
-   left free threw away about 7 dB through a 51 Ω series resistor.
+   woofers' own level (80-150 Hz). **In this run it sits 1.1 dB under**, 0.1 dB past the 1 dB it may drop for free
+   (the run with the guards alone sat 1.0 dB under, the run before them 3.5 dB). The sensitivity is measured
+   differently (23°, 300-1000 Hz), and is 1.4 dB under what the woofers give alone. A first preview run (not in this
+   round's outputs) with the level left free threw away about 7 dB through a 51 Ω series resistor.
 2. **The woofers must stay quiet under the coax LF.** From twice the bass crossover (340 Hz) up to 600 Hz they
    should sit at least 10 dB under the coax LF. This is a penalty in the fit, not a guarantee. Without it, the passive
    woofers ran about 8 dB under the coax out to about 800 Hz (an earlier preview run). That filled the coax LF's
    low-end droop (the cardioid chamber leaves the coax LF about 9 dB down at 150 Hz) and let non-cardioid sound into
    the band the cardioid section must own. **The delivered network nearly meets it, and misses at the bottom of the
-   band.** Recomputed from this run (23°, 1/3-octave smoothed, as the fit does): the woofers sit 9.1 dB under the
-   coax LF at 356 Hz, so 0.9 dB short, 1 of 11 grid points; 10.0 dB at 378 Hz. From 400 Hz up they are 10.9 dB under
-   or more, reaching 15.6 dB at 600 Hz.
+   band.** Recomputed from this run (23°, 1/3-octave smoothed, as the fit does): the woofers sit 9.7 dB under the
+   coax LF at 356 Hz, so 0.3 dB short, 1 of 11 grid points; 12.0 dB at 378 Hz. From 400 Hz up they are 14.9 dB under
+   or more, reaching 27.1 dB at 600 Hz.
 3. **A coax LF contour (shelf) network is offered.** It is R_lc with L_lc across it, before the coax LF pad. The run
    before the bass-peak guards used it (5.6 Ω with 0.7 mH, flat23 1.91 to 1.75 dB). **This run leaves it out:** it
-   made flat23 worse (2.39 to 2.82 dB). The Zobel across the woofers is used instead (item 8).
+   made flat23 a little worse (1.62 to 1.67 dB).
 4. **Semi-active: the coax DSP channel gets EQ.** The design said gain only. The EQ is fitted before the DSP
    high-pass, as the active fit does, and only inside 150 Hz to 2 times the LF-HF point, cut at the trusted limit
    (150 Hz to 2851 Hz).
@@ -56,9 +59,12 @@ against that, the links were made two-pole, and every number below is from the r
    and the return between a network and its driver. In the active modes every terminal pair then reaches its driver
    alone. Without that, the drivers' returns stayed joined at the network ground, and in passive mode the inverted
    woofers have their + on that ground: wiring the BASS terminals "straight to the woofers" could have shorted an
-   amplifier channel.
+   amplifier channel. The compensator (item 9) sits on the network side of K3, like the Zobel, so it drops out with
+   the bass network in the active modes.
 6. **Impedance and tolerance rules.** The floor is 3.5 Ω. The tolerance check draws every inductor and capacitor at
-   plus or minus 5 % (200 draws). The series-woofer fallback is tried only if no parallel network clears 3.5 Ω.
+   plus or minus 5 % (200 draws). If it fails, the fit is redone with the floor 0.1 Ω higher (up to 3.8 Ω). **In this
+   run it failed at 3.5 Ω** (worst draw 3.26 Ω, limit 3.3 Ω), **and passed at 3.6 Ω.** The series-woofer fallback is
+   tried only if no parallel network clears 3.5 Ω.
 7. **New: an electrical stopband rule.** The first network (L_b1 8 mH, C_b1 3.3 µF) had a bass transfer of
    **+3.0 dB at 2.43 kHz**: C_b1 was far too small to shunt the woofers, and it resonated with their voice-coil
    inductance. The fit could not see it. The bass field is exactly zero above the trusted limit, the bass-under term
@@ -72,9 +78,9 @@ against that, the links were made two-pole, and every number below is from the r
 
    **What the rule cost when it was added.** Flatness at 23° went from 1.43 dB (first network) to 1.75 dB. The
    bass-to-coax point moved from 150 Hz to 170 Hz. The level dropped by about 2 dB. It did not force the series
-   fallback. **In this run the bass misses it** (item 8): the coax LF and HF stopbands hold (−21.4 dB below 42 Hz,
-   −29.1 dB from 6.4 kHz, −23.0 dB below 400 Hz), but the bass is only 5.7 dB under its 170 Hz level at 686 Hz,
-   6.3 dB short of the 12 dB.
+   fallback. **In this run every stopband holds:** the bass is 21.0 dB under its 170 Hz level at 686 Hz (it missed by
+   6.3 dB with the guards alone), the coax LF −14.1 dB below 42 Hz and −28.7 dB from 6.4 kHz, the coax HF −22.8 dB
+   below 400 Hz.
 8. **New, the owner's follow-up: no bass peak below the fitted band.** The run with item 7 gave the woofers
    **+4.7 dB at 54 Hz**: the 15 mH coil resonating with the woofers, which look like a capacitor above their sealed-box
    resonance (about 40 Hz). The sum rose 5 to 6 dB at 50 to 60 Hz. The fit starts at 100 Hz, so nothing limited it.
@@ -88,110 +94,134 @@ against that, the links were made two-pole, and every number below is from the r
      costs nothing.
 
    Both are penalties, 1000 per dB at each frequency point (`PEAK_WEIGHT`). I tried weights from 20 to 10000 on
-   the whole search. **No weight met the +1 dB cap.** In no run did the bass get under +1.1 dB near 60 Hz. My
-   reading of the runs: with the 3.5 Ω floor and a bass low-pass at 150 to 190 Hz, a coil small enough not to
-   resonate with the woofers leaves too little impedance to hold the floor once a real shunt capacitor is added.
-   Weights 20 to 300 left it at +2.0 to +3.6 dB and
-   made flat23 3.3 to 7.3 dB. From 500 up it came to +1.1 to +1.7 dB, and the sum stayed within 1 dB of its level
-   below 100 Hz. 1000 gave the best flatness, so I kept it. **The result moves a lot with the weight:** 500 gave flat23
+   the whole search, before the compensator existed. **No weight met the +1 dB cap.** In no run did the bass get
+   under +1.1 dB near 60 Hz. With the 3.5 Ω floor and a bass low-pass at 150 to 190 Hz, a coil small enough not to
+   resonate with the woofers left too little impedance to hold the floor once a real shunt capacitor was added.
+   Weights 20 to 300 left it at +2.0 to +3.6 dB and made flat23 3.3 to 7.3 dB. From 500 up it came to +1.1 to
+   +1.7 dB. 1000 gave the best flatness, so I kept it. **The result moved a lot with the weight:** 500 gave flat23
    6.06 dB and 2000 gave 1.99 dB, with different crossover points and options.
 
-   **The result.** The woofers now get at most **+1.4 dB, at 61 Hz** (0.4 dB over the cap). The sum below 100 Hz
-   rises at most **0.4 dB above the fit's level, at 67 Hz** (limit 1 dB): no hump. Both figures are in `network.txt`
-   and the report's summary.
+   **What the guards alone cost** (the run before item 9). The woofers got +1.4 dB at 61 Hz, 0.4 dB over the cap. To
+   hold that, the fit took a small bass coil (5.5 mH) and nearly dropped the bass capacitor (0.56 µF), with a Zobel
+   (20 Ω with 390 µF) as the real shunt. The bass low-pass became a gentle slope into a shelf (−13.5 dB at 680 Hz,
+   −15 to −16 dB from 2 to 3 kHz) and **missed the stopband rule of item 7 by 6.3 dB.** Whole-system rear rejection
+   fell to 7.93 dB. The owner chose to fix that with the compensator (item 9).
+9. **New, the owner's choice: an impedance-peak compensator across the woofers.** The woofer pair in its sealed box
+   has an impedance peak of about **29 Ω at 40 Hz** (the box resonance), and falls to 3.26 Ω at 147 Hz. Above the
+   peak the woofers look like a capacitor, and that is what the bass coil resonated with (item 8). The compensator is
+   the standard fix: a resistor, a coil and a capacitor in series (R_bc, L_bc, C_bc), wired across the woofers on the
+   network side of K3. Near the box resonance it takes current the woofers do not, so the network sees a much flatter
+   load and a normal low-pass can work into it. Its textbook values come from the woofers' Re, fc, Qec and Qmc:
+   3.6 Ω, 9.2 mH and 1600 µF here. With those, the pair's 20-200 Hz impedance would run from 2.7 to 3.3 Ω instead of
+   3.3 to 29 Ω. That is under the 3.5 Ω floor, so the fit detunes it: **2.7 Ω, 23 mH and 1200 µF**, tuned to about
+   30 Hz. With these the woofer load runs from 2.6 Ω at 30 Hz to 6.2 Ω at 55 Hz (31 Ω without), and the network's
+   series coils lift the input to the floor. It is the first option the search tries, and it was kept: **flat23 2.39
+   to 1.62 dB.** After it, the search kept a 3rd-order bass low-pass (1.62 to 1.45 dB), and left the Zobel out
+   (1.53 dB, less than the 0.1 dB gain it needs).
 
-   **What it costs.** To avoid the resonance the fit took a small bass coil (5.5 mH, from 15 mH) and nearly
-   dropped the bass capacitor (C_b1 0.56 µF, from 100 µF), and damped the woofers with the Zobel (20 Ω with 390 µF)
-   instead. That keeps the floor, but the bass low-pass is now gentle: the woofers get −13.5 dB at 680 Hz, −14 dB at
-   1 kHz and −15 to −16 dB from 2 to 3 kHz. **So the bass misses the stopband rule of item 7 by 6.3 dB.** Every
-   weight I checked it at (50, 150, 1000, 2000, 5000 and 10000) missed it, by 6 to 18 dB. Against the run before
-   the guards: flat23 1.75 to **1.42 dB** (better), sensitivity 77.5 to **80.3 dB** (better), minimum impedance
-   3.52 to **3.50 Ω** (still on the floor), but whole-system rear rejection 11.62 to **7.93 dB**, bass DI smoothness
-   0.69 to **1.32 dB**, presence lift 4.04 to **4.32 dB** and window spread 3.73 to **3.99 dB** (all worse). The
-   crossover points moved from 170 / 1200 Hz to **170 / 1600 Hz**. It does not force the series fallback.
+   **The result.** The woofers now get at most **−0.3 dB, at 64 Hz** (limit +1 dB). The sum below 100 Hz stays
+   **1.2 dB under the fit's level** at its highest (67 Hz; limit +1 dB above it): no hump. The bass meets the
+   stopband rule with 9 dB to spare (item 7). Whole-system rear rejection is back to **9.70 dB**.
+
+   **What it costs.** Three more parts, two of them large: L_bc is a 23 mH cored coil that must carry 7.7 A peak
+   without saturating, and C_bc a 1200 µF bipolar electrolytic. R_bc (2.7 Ω) dissipates 8.9 W with a third of the
+   amplifier's voltage (10 W part) and 80 W at full voltage. The bass low-pass also grew: L_b1 8 mH (10.0 A) and L_b2
+   0.5 mH (10.1 A), both cored, and C_b1 180 µF. Against the run with the guards alone: flat23 1.42 to **1.68 dB**,
+   sensitivity 80.3 to **79.4 dB**, presence lift 4.32 to **4.72 dB** and window spread 3.99 to **4.20 dB** (all
+   worse); bass DI smoothness 1.32 to **0.74 dB** and whole_rear 7.93 to **9.70 dB** (better). The coax boards
+   changed too, which moves semi-active: its flat23 went 0.81 to 1.16 dB and presence lift 4.23 to 4.55 dB. The
+   crossover points stay at 170 / 1600 Hz. No series fallback.
 
 ## The passive network
 
 **Crossover points: bass to coax 170 Hz, coax LF to HF 1600 Hz.** The search took 30 grid pairs and kept these.
 It uses the woofers in parallel, the bass inverted and the coax HF inverted. One amplifier, one pair of terminals
-(IN), and links K1 to K5 all closed. Every value is a standard value (capacitors E12, resistors E24).
+(IN), and links K1 to K5 all closed. Every value is a standard value (capacitors E12, resistors E24). The fit's
+impedance floor is 3.6 Ω (item 6).
 
 | Part | Value | Type | DCR | Peak current at full voltage | Resistor rating |
 |---|---|---|---|---|---|
-| L_b1 | 5.5 mH | cored inductor | 0.33 Ω | 10.1 A (saturation current at least this) | |
-| C_b1 | 0.56 µF | film capacitor | | | |
-| R_bz | 20 Ω | resistor (Zobel) | | | 5 W |
-| C_bz | 390 µF | bipolar electrolytic capacitor (Zobel) | | | |
-| C_h1 | 47 µF | film capacitor | | | |
-| L_h1 | 20 mH | air-core inductor | 2.24 Ω | 1.9 A | |
-| L_l1 | 1.5 mH | air-core inductor | 0.61 Ω | 6.5 A | |
-| C_l1 | 10 µF | film capacitor | | | |
-| R_ls | 20 Ω | resistor | | | 10 W |
-| R_lp | 22 Ω | resistor | | | 5 W |
-| C_t1 | 4.7 µF | film capacitor | | | |
-| L_t1 | 0.5 mH | air-core inductor | 0.35 Ω | 1.1 A | |
+| L_b1 | 8 mH | cored inductor | 0.40 Ω | 10.0 A (saturation current at least this) | |
+| C_b1 | 180 µF | bipolar electrolytic capacitor | | | |
+| L_b2 | 0.5 mH | cored inductor | 0.10 Ω | 10.1 A (saturation current at least this) | |
+| R_bc | 2.7 Ω | resistor (compensator) | | | 10 W |
+| L_bc | 23 mH | cored inductor (compensator) | 0.67 Ω | 7.7 A (saturation current at least this) | |
+| C_bc | 1200 µF | bipolar electrolytic capacitor (compensator) | | | |
+| C_h1 | 120 µF | film capacitor | | | |
+| L_h1 | 20 mH | air-core inductor | 2.24 Ω | 4.7 A | |
+| L_l1 | 1.5 mH | air-core inductor | 0.61 Ω | 6.1 A | |
+| C_l1 | 8.2 µF | film capacitor | | | |
+| R_ls | 24 Ω | resistor | | | 10 W |
+| R_lp | 18 Ω | resistor | | | 5 W |
+| C_t1 | 1 µF | film capacitor | | | |
+| L_t1 | 0.7 mH | air-core inductor | 0.42 Ω | 0.34 A | |
 | C_t2 | 390 µF | film capacitor | | | |
-| R_ts | 2.2 Ω | resistor | | | 15 W |
-| R_tp | 1.2 Ω | resistor | | | 10 W |
+| R_ts | 0.68 Ω | resistor | | | 5 W |
+| R_tp | 12 Ω | resistor | | | 5 W |
 
 The peak current is the peak of a sine with the amplifier's full 25 V rms on the input, the largest from 20 Hz to
 20 kHz in either mode. A cored coil must not saturate below it. Parts per pair are in `parts.csv` (column
 `peak_a`).
 
 **What each part does.**
-- **Bass (L_b1, C_b1, and the Zobel R_bz, C_bz).** A series coil, and across the woofers a 20 Ω resistor in series
-  with 390 µF. C_b1 is so small (0.56 µF, about 1.7 kΩ at 170 Hz) that it does almost nothing; the Zobel arm is
-  the real shunt, and its 20 Ω damps the coil against the woofers. Its transfer (`plots/electrical.png`) rises to
-  **+1.4 dB at 61 Hz** (it was +4.7 dB at 54 Hz before the guards), is −2.6 dB at 100 Hz and −7.8 dB at 170 Hz, then
-  falls gently: −13.5 dB at 680 Hz, −14 dB at 1 kHz, −15.1 dB at 2 kHz, −16.3 dB at 3 kHz and −19.1 dB at 5 kHz. That
-  is a 1st-order slope into a shelf, not a 2nd-order low-pass, and it misses the stopband rule by 6.3 dB at 686 Hz
-  (item 8).
+- **Bass (L_b1, C_b1, L_b2, and the compensator R_bc, L_bc, C_bc).** A 3rd-order low-pass (coil, capacitor to
+  ground, coil) into the woofers, with the compensator across them (item 9). Its transfer (`plots/electrical.png`)
+  is −3.3 dB at 35 Hz, at most **−0.3 dB at 64 Hz**, −4.0 dB at 100 Hz and −8.2 dB at 170 Hz. It holds about −9 to
+  −10 dB from 200 to 300 Hz, then falls steeply: −29 dB at 680 Hz, −37 dB at 1 kHz, −50 dB at 2 kHz. That meets the
+  stopband rule (−21.0 dB re 170 Hz at 686 Hz, limit −12 dB).
 - **Coax high-pass (C_h1 from IN to node cx, L_h1 from cx to ground).** It feeds both coax networks, the LF and the
-  HF. The coax LF gets −15.7 dB at 99 Hz and −11.0 dB at 150 Hz.
+  HF. It is now resonant near 100 Hz: the coax LF gets **−6.5 dB at 100 Hz** (it was −15.7 dB at 99 Hz with the
+  guards alone) and −9.6 dB at 150 Hz.
 - **Coax LF.** A low-pass (L_l1, C_l1) and a pad (R_ls, R_lp), no contour. It is resonant near its crossover: the
-  coax LF gets its most voltage, −5.0 dB, at 1.41 kHz.
-- **Coax HF.** A high-pass (C_t1, L_t1, C_t2) and a pad (R_ts, R_tp). C_t2 (390 µF) is so large that it is nearly a
-  wire, so the high-pass is close to 2nd order. A 390 µF film capacitor is a big, costly part; the model has not been
-  run without it.
+  coax LF gets its most voltage, −6.0 dB, at 1.41 kHz.
+- **Coax HF.** C_t1 (1 µF) with L_t1 (0.7 mH) is a high-pass tuned near 6 kHz, which here does most of the padding
+  as well: the HF gets −24 dB at 2 kHz, −20 dB at 3 kHz, −16 dB at 5 kHz and −4 dB at 20 kHz, rising with frequency.
+  The pad (R_ts 0.68 Ω, R_tp 12 Ω) does little. C_t2 (390 µF) is so large that it is nearly a wire; a 390 µF film
+  capacitor is a big, costly part, and the model has not been run without it.
 
-**What the search kept and left out:**
-- Kept the Zobel across the woofers (flat23 2.39 to 1.42 dB).
-- Left out the coax LF contour (flat23 2.39 to 2.82 dB), a 3rd-order coax LF low-pass (1.42 to 2.86 dB) and the RLC
-  shunt across the coax HF (1.42 to 1.99 dB): each made flat23 worse.
-- Left out a 3rd-order bass low-pass: its fit took the impedance to 0.15 Ω, far under the floor.
-- Left out the coax LF notch at 2700 Hz: it made presence lift 0.40 dB worse (0.25 dB allowed).
+**What the search kept and left out** (each option tried in turn, in this order):
+- Kept the impedance-peak compensator across the woofers (flat23 2.39 to 1.62 dB).
+- Left out the coax LF contour (1.62 to 1.67 dB): no better.
+- Left out the Zobel across the woofers (1.62 to 1.53 dB): less than the 0.1 dB gain needed.
+- Kept a 3rd-order bass low-pass (1.62 to 1.45 dB).
+- Left out a 3rd-order coax LF low-pass (1.45 to 1.62 dB) and the coax LF notch at 2700 Hz (1.45 to 1.47 dB): no
+  better.
+- Left out the RLC shunt across the coax HF: it made the LF-HF directivity smoothness 1.37 dB worse (0.25 dB
+  allowed).
+
+The tolerance refit at the 3.6 Ω floor moved flat23 from 1.45 to 1.68 dB.
 
 **Impedance and level:**
-- Minimum impedance is **3.50 Ω at 73 Hz**, on the 3.5 Ω floor (+0.00 Ω). That is also the minimum in the bass band
-  (20-500 Hz). `plots/impedance.png` shows the 3.5 Ω line. The floor is the SA550's minimum.
-- **Semi-active impedance.** The coax channel's minimum is 3.65 Ω at 20 kHz, 0.15 Ω over the floor. The bass channel
-  (bare woofers in parallel) dips to **3.26 Ω at 149 Hz, below the 3.5 Ω the SA550 needs**. The fit and the tolerance
-  check do not cover that channel, because the amplifier for it is not chosen. Pick one that is happy at about 3 Ω.
-- Sensitivity is **80.3 dB at 2 m for 2.83 V** (23°, 300-1000 Hz). That is 0.5 dB below what the woofers give alone
-  (77.5 dB, 3.3 dB below, before the guards).
-- **Tolerance check passed.** The worst of 200 draws was 3.47 Ω (limit 3.3 Ω). Flatness (flat23) was 1.42 dB nominal
-  and 1.67 dB at the 95th percentile (limit +0.5 dB). Whole_rear ran 7.57 to 8.21 dB (5th to 95th percentile).
+- Minimum impedance is **3.60 Ω at 25 Hz**, on the 3.6 Ω floor the fit used, and 0.10 Ω over the 3.5 Ω the SA550
+  needs. That is also the minimum in the bass band (20-500 Hz). `plots/impedance.png` shows the 3.5 Ω line.
+- **Semi-active impedance.** The coax channel's minimum is 6.27 Ω at 1436 Hz. The bass channel (bare woofers in
+  parallel, no compensator: it is behind K3) dips to **3.26 Ω at 149 Hz, below the 3.5 Ω the SA550 needs**. The fit
+  and the tolerance check do not cover that channel, because the amplifier for it is not chosen. Pick one that is
+  happy at about 3 Ω.
+- Sensitivity is **79.4 dB at 2 m for 2.83 V** (23°, 300-1000 Hz). That is 1.4 dB below what the woofers give alone
+  (80.3 dB with the guards alone, 77.5 dB before them).
+- **Tolerance check passed at 3.6 Ω.** The worst of 200 draws was 3.41 Ω (limit 3.3 Ω). Flatness (flat23) was
+  1.68 dB nominal and 1.91 dB at the 95th percentile (limit +0.5 dB). Whole_rear ran 9.48 to 9.93 dB (5th to 95th
+  percentile).
 - No series-woofer fallback was needed: a parallel network cleared the floor.
 
 **Power.** Resistor ratings follow the rule in `network.txt`: the first of 5, 10, 15, 20, 30, 50 W at or above the
-dissipation with one third of the amplifier's voltage (roughly what music averages). Three are close to their
-ratings: R_bz at 4.31 W against 5 W (passive mode only), and, in semi-active mode (the same coax boards, but the
-amplifier channel carries only the coax), R_ts at 11.61 W against 15 W and R_ls at 7.63 W against 10 W (passive
-mode: 11.18 W and 7.30 W). R_tp reaches 5.42 W against 10 W. At full voltage, in the larger of the two modes, R_ts
-would dissipate 105 W, R_ls 69 W, R_tp 49 W and R_bz 39 W. I would buy higher-rated parts than the listed ones, at
-least for R_bz and R_ts. These are sine figures, so they are conservative for music.
+dissipation with one third of the amplifier's voltage (roughly what music averages). Two are close to their ratings:
+R_bc at 8.87 W against 10 W (passive mode only), and R_ls at 7.97 W against 10 W (7.61 W in semi-active mode). R_tp
+reaches 2.91 W against 5 W, R_lp 0.98 W and R_ts 0.57 W. At full voltage, in the larger of the two modes, R_bc would
+dissipate 80 W, R_ls 72 W, R_tp 26 W, R_lp 9 W and R_ts 5 W. I would buy higher-rated parts than the listed ones,
+at least for R_bc and R_ls. These are sine figures, so they are conservative for music.
 
-**Coils and capacitors.** L_b1 is 5.5 mH on a core and must carry 10.1 A peak without saturating. L_h1 (20 mH air
-core, 2.24 Ω) is large. C_bz (390 µF electrolytic) and C_t2 (390 µF film) are large too.
+**Coils and capacitors.** Three cored coils: L_b1 (8 mH, 10.0 A peak), L_b2 (0.5 mH, 10.1 A) and L_bc (23 mH, 7.7 A),
+each rated for at least that saturation current. L_h1 (20 mH air core, 2.24 Ω) is large. C_bc (1200 µF) and C_b1
+(180 µF) are bipolar electrolytics; C_h1 (120 µF) and C_t2 (390 µF) are large film capacitors.
 
 ### Warnings in network.txt
 
-- **C_bz is at the 400 µF limit.** The fit wanted a larger Zobel capacitor. The response near this part is a
-  compromise.
 - **L_h1 is at the 20 mH limit.** The fit wanted an even larger coil for the coax high-pass, but 20 mH air-core is
   already 2.24 Ω of DCR and would be large and costly. The response near this part is a compromise.
-- `network.txt` also marks two lines **OVER**: the bass stopband (−5.7 dB at 686 Hz, limit −12 dB) and the largest
-  branch gain (+1.4 dB at 61 Hz, limit +1 dB). See item 8.
+- No line is marked **OVER**: the stopbands, the largest branch gain (−0.3 dB at 65 Hz, limit +1 dB) and the rise
+  below 100 Hz (−1.2 dB at 67 Hz, limit +1 dB) all hold.
 
 ## The semi-active DSP
 
@@ -206,71 +236,65 @@ passive mode). `semi_active.txt` says this in its header.
 
 | Way | Gain | Delay | Polarity | PEQ (f0, gain, Q) |
 |---|---|---|---|---|
-| bass | +0.10 dB | 1.30 ms | inverted | 80 Hz +1.18 dB Q1.65; 214 Hz −1.77 dB Q1.22 |
-| coax | 0 dB | 0 | normal | 150 Hz +8.45 dB Q1.27; 598 Hz −2.46 dB Q2.25; 1322 Hz −7.09 dB Q2.00; 1449 Hz +6.24 dB Q1.20 |
+| bass | −1.79 dB | 1.30 ms | inverted | 80 Hz +1.18 dB Q1.65; 214 Hz −1.77 dB Q1.22 |
+| coax | 0 dB | 0 | normal | 150 Hz +8.28 dB Q1.32; 572 Hz −2.07 dB Q3.13; 1352 Hz −2.07 dB Q5.13; 2726 Hz −1.15 dB Q3.27 |
 
-- **No PEQ is at the fitter's limit now.** The coax boards changed with the bass-peak guards (no contour, a lighter
-  coax LF pad), and in semi-active mode they pass the coax LF −10.8 dB at 150 Hz, about 4 dB more than the boards
-  before the guards. So the DSP has less of the cardioid chamber's low-end droop to fill: +8.45 dB at 150 Hz instead
-  of +12 dB at its limit.
-- **A cut and a boost close together.** The 1322 Hz cut and the 1449 Hz boost partly cancel. Together they make
-  about −1.2 dB at 1.3 kHz and +2 dB at 1.8 to 2 kHz, around the coax LF to HF crossover.
-- **Stacked boost.** The four coax PEQs together (my sum of their curves) peak at **8.4 dB at 150 Hz**. That needs
+- **No PEQ is at the fitter's limit.** In semi-active mode the coax boards pass the coax LF −9.4 dB at 150 Hz, so the
+  DSP fills the cardioid chamber's low-end droop with +8.28 dB at 150 Hz.
+- **Stacked boost.** The four coax PEQs together (my sum of their curves) peak at **8.3 dB at 150 Hz**. That needs
   the usual care: amplifier clipping and the coax LF's excursion near 150 Hz should be checked (see Open). Normalise in
   the DSP so the largest boost does not clip, as the file says.
 
 ## Three modes, trusted scores
 
 Trusted band (150 Hz to 2851 Hz; bass DI from 120 Hz). Lower is better except the rear and cardioid rows. The first
-two columns are earlier passive networks, for comparison: the first network, and the one with the stopband rule but
-before the bass-peak guards. Semi-active and active are from this run.
+three columns are earlier passive networks, for comparison: the first network, the one with the stopband rule but
+before the bass-peak guards, and the one with the guards but no compensator. Semi-active and active are from this
+run.
 
-| Score (dB) | Passive, first network | Passive, before the guards | Passive | Semi-active | Active |
-|---|---|---|---|---|---|
-| 23° flatness | 1.43 | 1.75 | 1.42 | **0.81** | 1.16 |
-| Window spread | 3.60 | 3.73 | 3.99 | 3.97 | **3.40** |
-| Presence lift, 2-2.85 kHz | 4.22 | 4.04 | 4.32 | 4.23 | **3.90** |
-| DI smoothness, bass, 120-500 Hz | 0.94 | 0.69 | 1.32 | 1.53 | 1.66 |
-| DI smoothness, LF-HF, 500-2851 Hz | 0.77 | 1.11 | 1.20 | 1.12 | **1.08** |
-| Whole-system rear rejection, 150-300 Hz (higher is better) | 10.44 | 11.62 | 7.93 | 9.87 | **9.88** |
-| Cardioid hard / aim (coax section) | 17.15 / 12.36 | 17.15 / 12.36 | 17.15 / 12.36 | 17.15 / 12.36 | 17.15 / 12.36 |
+| Score (dB) | Passive, first network | Passive, before the guards | Passive, guards alone | Passive | Semi-active | Active |
+|---|---|---|---|---|---|---|
+| 23° flatness | 1.43 | 1.75 | 1.42 | 1.68 | **1.16** | **1.16** |
+| Window spread | 3.60 | 3.73 | 3.99 | 4.20 | 4.20 | **3.40** |
+| Presence lift, 2-2.85 kHz | 4.22 | 4.04 | 4.32 | 4.72 | 4.55 | **3.90** |
+| DI smoothness, bass, 120-500 Hz | 0.94 | 0.69 | 1.32 | **0.74** | 1.53 | 1.66 |
+| DI smoothness, LF-HF, 500-2851 Hz | 0.77 | 1.11 | 1.20 | 1.25 | 1.24 | **1.08** |
+| Whole-system rear rejection, 150-300 Hz (higher is better) | 10.44 | 11.62 | 7.93 | 9.70 | **9.89** | 9.88 |
+| Cardioid hard / aim (coax section) | 17.15 / 12.36 | 17.15 / 12.36 | 17.15 / 12.36 | 17.15 / 12.36 | 17.15 / 12.36 | 17.15 / 12.36 |
 
 Bold marks the best of this run's three modes. The coax section's cardioid scores are the same because the coax is
-the same box.
+the same box. Semi-active's scores moved with the coax boards (with the guards alone it had flat23 0.81, window
+spread 3.97, presence lift 4.23, DI LF-HF 1.12 and whole_rear 9.87 dB).
 
 ## Where passive falls short, and why
 
-- **Flatness.** Passive is 0.26 dB behind active at 23°. Semi-active is now 0.35 dB ahead of active: its DSP EQ
-  works on the new coax boards without hitting a limit. The owner can judge all three from
-  `plots/crossover_23_*.png`.
-- **Below the fitted band: no hump now.** Below 100 Hz the passive sum (23°, 1/6-octave smoothed,
-  `plots/crossover_23_passive.png`) is 78.2 dB at 50 Hz, 79.7 dB at 60 Hz and 80.1 dB at 67 to 70 Hz, then dips to
-  76.9 dB at 120 Hz and comes back to 78.8 dB at 150 Hz. Against the fit's level (1/3-octave, as the fit sees it) the
-  highest point below 100 Hz is 0.4 dB above, at 67 Hz. Before the guards it was 5 to 6 dB over its 150 Hz level at
-  50 to 60 Hz.
-- **The bass reaches into the coax band.** The bass low-pass is now gentle (item 8): the woofers get −14 to −16 dB of
-  the input from 1 to 3 kHz, against −34 dB at 1 kHz before. The model shows little sound from them there, but the
-  bass field is not modelled above the trusted limit (2851 Hz), and real woofers have cone break-up in that region.
-  With the owner sensitive to 2 to 5 kHz, this needs a measurement before building passive.
-- **The 2 to 5 kHz window.** Presence lift is 4.32 dB passive, 4.23 dB semi-active and 3.90 dB active. All three are
-  well above the 0.5 dB the score calls a pass. The lift is the coax's, and it was already there in round 3c;
-  passive adds 0.4 dB of it and semi-active 0.3 dB. Window spread is 3.99 and 3.97 dB against 3.40 dB. Above 2851 Hz
-  the scores are low confidence and are not ranked.
-- **Rear rejection is lower.** The whole_rear score is the minimum over 150 to 300 Hz. Passive is 7.93 dB against
-  9.87 and 9.88 dB, and across the band it is lower too: at about 240 Hz the passive rejects about 13.4 dB, and
-  semi-active and active about 18.5 dB (`plots/whole_rear_compare.png`). The gentle bass low-pass lets the woofers,
-  which radiate both ways, further into the cardioid band.
-- **Sensitivity.** 80.3 dB is 0.5 dB below the woofers alone. The active figure is not comparable, as each way has
+- **Flatness.** Passive is 0.52 dB behind active and semi-active at 23° (1.68 against 1.16 dB). The owner can judge
+  all three from `plots/crossover_23_*.png`.
+- **Below the fitted band: no hump.** Below 100 Hz the passive sum (23°, 1/6-octave smoothed,
+  `plots/crossover_23_passive.png`) is 75.7 dB at 50 Hz, 77.7 dB at 60 Hz, 78.5 dB at 67 Hz and 77.6 dB at 100 Hz,
+  then rises to 79.4 dB at 150 Hz and 81.0 dB at 250 Hz. Against the fit's level (1/3-octave, as the fit sees it)
+  the highest point below 100 Hz is 1.2 dB under, at 67 Hz.
+- **The 2 to 5 kHz window.** Presence lift is 4.72 dB passive, 4.55 dB semi-active and 3.90 dB active. All three are
+  well above the 0.5 dB the score calls a pass. The lift is the coax's, and it was already there in round 3c; passive
+  adds 0.8 dB of it and semi-active 0.65 dB, more than with the guards alone (0.4 and 0.3 dB). The coax HF network
+  changed (item 9 and "What each part does"), and that is the likely cause. Window spread is 4.20 dB in both against
+  3.40 dB. Above 2851 Hz the scores are low confidence and are not ranked. The bass no longer reaches into this band:
+  the woofers get −50 dB at 2 kHz (−15 dB with the guards alone).
+- **Rear rejection.** The whole_rear score is the minimum over 150 to 300 Hz. Passive is 9.70 dB against 9.89 and
+  9.88 dB, close now, but across the band it is lower: at about 240 Hz the passive rejects about 12.8 dB, and
+  semi-active and active about 18.5 dB (`plots/whole_rear_compare.png`). Below 150 Hz the passive rejects more.
+- **Sensitivity.** 79.4 dB is 1.4 dB below the woofers alone. The active figure is not comparable, as each way has
   its own amplifier gain.
-- **Size and cost.** A 5.5 mH cored coil rated for 10.1 A, a 20 mH air-core coil, a 390 µF film capacitor, a
-  390 µF electrolytic, and an R_ts that dissipates 105 W at full voltage are not small or cheap. Parts cost was not
-  estimated.
+- **Size and cost.** Three cored coils (8 mH and 0.5 mH at 10 A, 23 mH at 7.7 A), a 20 mH air-core coil, a 1200 µF
+  and a 180 µF electrolytic, a 120 µF and a 390 µF film capacitor, and an R_bc that dissipates 80 W at full voltage
+  are not small or cheap. Parts cost was not estimated.
 
 ## Notes
 
 - **Models.** The part values come from the model of unmeasured drivers. Real driver impedance will move the
-  network. Treat it as a first draft to be trimmed after measurement. The woofers' voice-coil inductance is modelled
-  as a pure Le, which overstates their impedance above about 2 kHz.
+  network, and the compensator most of all: it is tuned to the woofers' modelled box resonance. Treat it as a first
+  draft to be trimmed after measurement. The woofers' voice-coil inductance is modelled as a pure Le, which
+  overstates their impedance above about 2 kHz.
 - **Above 2851 Hz** the data are low confidence. The fit still uses them, at a quarter weight, from 2851 Hz to
   10 kHz, so both coax networks (LF and HF) are shaped partly by low-confidence data. The scores above the limit are
   not ranked.
@@ -281,22 +305,21 @@ the same box.
 
 ## Open
 
-- Whether the owner wants passive at all: it needs one amplifier and no DSP, at lower rear rejection through the
-  cardioid band, a bass low-pass that misses its stopband rule and reaches into the coax band, and the parts above.
-  Semi-active needs two channels and a DSP on the coax only, and is now the flattest of the three.
-- **The rules conflict on these woofers.** The +1 dB gain cap, the 3.5 Ω floor and the bass stopband rule cannot all
-  hold with the topologies offered: no weight tried met the cap, and every weight that came near it broke the
-  stopband rule (item 8). Ways out, none modelled here: accept the gentle bass slope (this run), accept the 54 Hz
-  peak (the run before), or add a network that flattens the woofers' impedance peak (a series RLC across them, tuned
-  to their resonance), which would let a normal 2nd-order low-pass work. The owner chooses.
+- Whether the owner wants passive at all: it needs one amplifier and no DSP, at 0.5 dB less flatness than the other
+  two, more 2 to 5 kHz lift, lower rear rejection through the middle of the cardioid band, and the parts above.
+  Semi-active needs two channels and a DSP on the coax only, and ties active for flatness.
+- **The rule conflict is resolved by the compensator.** With it the floor, the gain cap, the no-hump guard and the
+  bass stopband rule all hold (item 9). The cost is three more parts and the coax changes above.
 - **The result is sensitive.** Small changes to the guard weight changed the crossover points, the options and
-  flat23 a lot (item 8). Measured driver data may move it as much.
-- **Excursion in passive mode.** The woofers get +1.4 dB at 61 Hz. The coax LF gets its most voltage, −5.0 dB, at
-  1.41 kHz, and −15.7 dB at 99 Hz. Judging excursion needs the drivers' Xmax and an excursion model.
-- The stacked 8.4 dB semi-active coax boost at 150 Hz needs a check of the coax LF's excursion and amplifier
+  flat23 a lot (item 8), and the compensator's values depend on the woofers' modelled resonance. Measured driver
+  data may move it as much.
+- **Excursion in passive mode.** The woofers get at most −0.3 dB, at 64 Hz. The coax LF now gets −6.5 dB at 100 Hz,
+  9 dB more than with the guards alone, and its most, −6.0 dB, at 1.41 kHz. Judging excursion needs the drivers'
+  Xmax and an excursion model; the coax LF near 100 Hz is the one to check.
+- The stacked 8.3 dB semi-active coax boost at 150 Hz needs a check of the coax LF's excursion and amplifier
   headroom.
 - Buy the resistors with margin, or check them against the full-voltage figures in `network.txt`. Check that the
-  cored L_b1 is rated for 10.1 A.
+  cored L_b1, L_b2 and L_bc are rated for 10.0, 10.1 and 7.7 A.
 - Everything above depends on unmeasured drivers. Rerun after the coax and woofers are measured.
 - The VituixCAD netlist (`vituixcad_netlist.txt`) has not been imported or checked by the owner.
 - The owner's report page gets its Passive option from the controller after this round.
