@@ -64,11 +64,12 @@ def _level(p: np.ndarray, f: np.ndarray, band: tuple[float, float]) -> float | N
     return float(np.mean(20 * np.log10(np.abs(p[m])))) if m.any() else None
 
 
-def _fit_at(sw: Ways, tl: float, fb: float, fallback_db: float | None) -> SemiActive:
+def _fit_at(sw: Ways, tl: float, fb: float, lf_hf: float, fallback_db: float | None) -> SemiActive:
     """The DSP stage at bass-to-coax point fb from the data at or below tl only: coax at 0 dB, the bass gain
-    matching it over MATCH_BANDS["bass"] (fallback_db when that band holds no point), the coax PEQs over (fb, tl)
-    and the bass PEQs towards the coax level over MATCH_BANDS["coax_lf"], then the bass delay and polarity aligned to the coax. Delays are
-    shifted so the smaller is 0."""
+    matching it over MATCH_BANDS["bass"] (fallback_db when that band holds no point), the coax PEQs (on the coax
+    way before its LR4 high-pass, over eq_band("coax_lf", fb, lf_hf) up to tl) and the bass PEQs towards the coax
+    level over MATCH_BANDS["coax_lf"], then the bass delay and polarity aligned to the coax. Delays are shifted so
+    the smaller is 0."""
     m = sw.f <= tl
     f, i = sw.f[m], sw.obs.at23_idx
     b, c = sw.ways["bass"][m, i], sw.ways["coax"][m, i]
@@ -79,8 +80,8 @@ def _fit_at(sw: Ways, tl: float, fb: float, fallback_db: float | None) -> SemiAc
     gain = fallback_db if lb is None and fallback_db is not None else ref - (lb if lb is not None else math.nan)
     if not math.isfinite(gain):
         raise ValueError(f"no frequencies in level-matching band {MATCH_BANDS['bass']}")
-    hp = 20 * np.log10(np.abs(lr4(f, fb, "high") * c))  # the coax channel after its LR4 high-pass, gain 0 dB
-    ceq = fit_peq(f, hp, ref, (fb, tl), N_PEQ_COAX)
+    # as xo_fit.fit_at: the way before its LR4 high-pass (gain 0 dB), which _transfer then applies on top
+    ceq = fit_peq(f, 20 * np.log10(np.abs(c)), ref, eq_band("coax_lf", fb, lf_hf), N_PEQ_COAX)
     eq = fit_peq(f, 20 * np.log10(np.abs(b)) + gain, ref, eq_band("bass", fb, fb), N_PEQ["bass"])
     sa = SemiActive(fb, WayFilter(gain, 0.0, 1, eq), WayFilter(0.0, 0.0, 1, ceq))
     d, pol = align(f, _transfer(f, sa, "bass") * b, _transfer(f, sa, "coax") * c, ref, fb, tl, BASS_DELAYS)
@@ -96,7 +97,7 @@ def fit_semi_active(ways: Ways, z: Callable[[np.ndarray], dict[str, np.ndarray]]
     sw = semi_ways(ways, z, fit)
     cands = []
     for fb in BASS_COAX_GRID:
-        sa = _fit_at(sw, tl, fb, fallback_db)
+        sa = _fit_at(sw, tl, fb, fit.lf_hf, fallback_db)
         total = semi_total(sw, sa)
         spin = spinorama(total, ways.obs, f=ways.f)
         scores = score_all(ways.f, total, coax_section(ways), ways.obs, spin, trusted_limit=tl,

@@ -105,3 +105,26 @@ def test_semi_active_text_lists_coax_peqs():
     txt = semi_active_text(sa, 2851.0, design="round-3.toml", sha="abcd1234")
     assert "coax\tpeq\t150.0\t+6.00\t1.200" in txt
     assert txt.count("coax\tpeq 150 Hz 6 dB Q1.2") == 2
+
+
+def test_semi_active_coax_peqs_lie_in_the_active_fits_band_below_tl(monkeypatch):
+    import speaker.semi_active as S
+    from speaker.xo_fit import eq_band
+    monkeypatch.setattr(S, "BASS_COAX_GRID", (150.0,))
+    w = omni_ways(F)
+    g = 10 ** (-8 / 20)
+    w.ways["coax_lf"] = w.ways["coax_lf"] * ((g + 1j * F / 300.0) / (1 + 1j * F / 300.0))[:, None]
+    fit, tl = _fit(), 5000.0
+    sa = fit_semi_active(w, _resistive(), tl, fit)
+    lo, hi = eq_band("coax_lf", sa.bass_coax, fit.lf_hf)
+    assert sa.coax.peq and all(lo <= p.f0 <= hi and p.f0 < tl for p in sa.coax.peq)
+
+
+def test_semi_active_coax_peqs_are_fitted_before_the_lr4_high_pass():
+    import speaker.semi_active as S
+    from speaker.system import Ways
+    w = omni_ways(F)
+    flat = Ways(F, w.obs, {"bass": w.ways["bass"], "coax": w.ways["coax_lf"]}, {})
+    sa = S._fit_at(flat, 5000.0, 150.0, 1600.0, None)
+    # a flat coax way needs no EQ: the LR4 high-pass alone must not provoke a boost near fb
+    assert sa.coax.peq == ()
