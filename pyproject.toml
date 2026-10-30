@@ -14,6 +14,7 @@ dependencies = [
     "pocl-binary-distribution",
     "gmsh>=4.13",
     "tomli-w>=1.2.0",
+    "schemdraw>=0.19",
 ]
 
 [project.scripts]
