@@ -146,7 +146,7 @@ def apply_active(w: Ways, xo: ActiveCrossover) -> np.ndarray:
 Biquad = tuple[float, float, float, float, float]  # b0, b1, b2, a1, a2 with a0 = 1
 
 
-def _rbj_butterworth(kind: Literal["low", "high"], fc: float, fs: float) -> Biquad:
+def rbj_butterworth(kind: Literal["low", "high"], fc: float, fs: float) -> Biquad:
     w0 = 2 * np.pi * fc / fs
     c, al = np.cos(w0), np.sin(w0) / (2 * np.sqrt(0.5))
     b0 = (1 - c) / 2 if kind == "low" else (1 + c) / 2
@@ -155,7 +155,7 @@ def _rbj_butterworth(kind: Literal["low", "high"], fc: float, fs: float) -> Biqu
     return (b0 / a0, b1 / a0, b0 / a0, -2 * c / a0, (1 - al) / a0)
 
 
-def _rbj_peaking(p: Peq, fs: float) -> Biquad:
+def rbj_peaking(p: Peq, fs: float) -> Biquad:
     w0 = 2 * np.pi * p.f0 / fs
     c, al, a = np.cos(w0), np.sin(w0) / (2 * p.q), 10 ** (p.gain_db / 40)
     a0 = 1 + al / a
@@ -168,9 +168,9 @@ def biquads(xo: ActiveCrossover, fs: float) -> dict[str, list[tuple[str, Biquad]
     for way in ("bass", "coax_lf", "coax_hf"):
         secs: list[tuple[str, Biquad]] = []
         for kind, fc in _edges(xo, way):
-            c = _rbj_butterworth(kind, fc, fs)
+            c = rbj_butterworth(kind, fc, fs)
             secs += [(f"lr4_{'lp' if kind == 'low' else 'hp'} {fc:g} Hz ({i}/2)", c) for i in (1, 2)]
-        secs += [(f"peq {p.f0:g} Hz {p.gain_db:g} dB Q{p.q:g}", _rbj_peaking(p, fs)) for p in xo.ways[way].peq]
+        secs += [(f"peq {p.f0:g} Hz {p.gain_db:g} dB Q{p.q:g}", rbj_peaking(p, fs)) for p in xo.ways[way].peq]
         out[way] = secs
     return out
 

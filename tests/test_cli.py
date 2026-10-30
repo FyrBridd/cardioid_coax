@@ -34,3 +34,27 @@ def test_build_rejects_bad_params_with_exit_code_2(tmp_path, capsys):
     err = capsys.readouterr().err
     assert err.startswith("error: ") and "depth 351 mm" in err
     assert not out.exists()  # nothing written before validation
+
+
+def test_cli_passive_subcommand_parses(monkeypatch, tmp_path):
+    import speaker.passive_report as pr
+    calls = []
+
+    def fake(params_path, out_dir, *, trusted_limit):
+        calls.append((params_path, out_dir, trusted_limit))
+        return tmp_path / "report.html"
+    monkeypatch.setattr(pr, "run_passive", fake)
+    assert main(["passive", "--trusted-limit", "2851"]) == 0
+    assert calls == [(None, Path("out/passive"), (2851.0, "given on the command line"))]
+    assert main(["passive", "--params", "p.toml", "--out", str(tmp_path), "--trusted-limit", "2500"]) == 0
+    assert calls[-1] == (Path("p.toml"), tmp_path, (2500.0, "given on the command line"))
+
+
+def test_cli_passive_needs_the_trusted_limit(monkeypatch, tmp_path, capsys):
+    import speaker.passive_report as pr
+    calls = []
+    monkeypatch.setattr(pr, "run_passive", lambda *a, **k: calls.append(a))
+    assert main(["passive", "--params", "p.toml", "--out", str(tmp_path)]) == 2
+    err = capsys.readouterr().err
+    assert err.startswith("error: ") and "--trusted-limit" in err and "directivity run's trusted limit" in err
+    assert "2851" in err and calls == []

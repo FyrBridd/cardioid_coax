@@ -12,6 +12,7 @@ from speaker.constants import C, RHO
 from speaker.drivers import Driver, load_driver
 from speaker.layout import Layout, compute_layout
 from speaker.params import Params, load_params
+from speaker.system import Ways
 
 
 class DesignTuple(NamedTuple):
@@ -83,3 +84,20 @@ def monopole_puck(
         col = PUCK_TAGS.index("coax_hf")
         axis[:, col] = 10 ** (np.asarray(hf_axis_db(f), dtype=float) / 20) * np.exp(1j * np.angle(axis[:, col]))
     return SourceField(f, PUCK_TAGS, obs, pr[..., :-1], {**_band_meta(f), "axis_1m": axis})
+
+
+# Hand-written values for every name `speaker.passive.value_names` can return (all options on), inside BOUNDS.
+SAMPLE = {"L_b1": 6.5e-3, "C_b1": 100e-6, "L_b2": 2.0e-3, "R_bz": 6.8, "C_bz": 47e-6,
+          "R_bc": 3.6, "L_bc": 9.0e-3, "C_bc": 1500e-6,
+          "C_h1": 100e-6, "L_h1": 8.0e-3, "R_ls": 1.5, "R_lp": 15.0, "L_l1": 1.0e-3, "C_l1": 8.2e-6,
+          "L_l2": 0.5e-3, "L_ln": 0.3e-3, "C_ln": 10e-6, "R_ln": 4.7, "R_lc": 10.0, "L_lc": 3.3e-3,
+          "C_t1": 10e-6, "L_t1": 0.6e-3,
+          "C_t2": 15e-6, "R_ts": 4.7, "R_tp": 3.3, "R_tr": 6.8, "L_tr": 0.4e-3, "C_tr": 4.7e-6}
+
+
+def omni_ways(f: np.ndarray, level_db: float = 0.0) -> Ways:
+    """Every way flat at level_db (re 1 Pa peak) in every direction of observation_set(2.0), no phase."""
+    f = np.asarray(f, dtype=float)
+    o = observation_set(2.0)
+    a = 10 ** (level_db / 20)
+    return Ways(f, o, {k: a * np.ones((len(f), len(o.dirs)), complex) for k in ("bass", "coax_lf", "coax_hf")}, {})
