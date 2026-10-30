@@ -99,7 +99,7 @@ def test_parts_csv_lists_a_pair_with_types_and_ratings(monkeypatch):
     series = _result(Topology(bass_wiring="series"))
     res = _result(Topology(zobel=True), z_ok=False, series=series)
     rows = list(csv.DictReader(io.StringIO(pr.parts_csv(res, load_design(None)))))
-    assert list(rows[0]) == ["part", "value", "unit", "type", "tolerance", "dcr_ohm", "rating_w", "qty_pair",
+    assert list(rows[0]) == ["part", "value", "unit", "type", "tolerance", "dcr_ohm", "peak_a", "rating_w", "qty_pair",
                              "network"]
     par = {r["part"]: r for r in rows if r["network"] == "parallel"}
     ser = {r["part"]: r for r in rows if r["network"] == "series"}
@@ -188,7 +188,7 @@ def test_run_passive_writes_every_output(tmp_path, monkeypatch):
                  "schematic_bass.svg", "schematic_coax.svg", "links.svg", "report.html"):
         assert (tmp_path / name).exists()
     for png in ("crossover_23_passive", "crossover_23_semi_active", "crossover_23_active", "impedance",
-                "polar_h_passive", "polar_v_passive", "whole_rear_compare", "tolerance"):
+                "polar_h_passive", "polar_v_passive", "whole_rear_compare", "tolerance", "electrical"):
         assert (tmp_path / "plots" / f"{png}.png").stat().st_size > 0
     scores = json.loads((tmp_path / "scores.json").read_text())
     assert set(scores) == {"passive", "semi_active", "active"}
@@ -198,7 +198,8 @@ def test_run_passive_writes_every_output(tmp_path, monkeypatch):
     page = out.read_text()
     for s in ("Where passive falls short of active", "Tolerance", "bare woofer", "schematic_bass.svg",
               "links.svg", "plots/impedance.png", "plots/whole_rear_compare.png", "semi_active.txt",
-              "Passive", "Semi-active", "Active", "8.00 Ω", "Passive behind active", "dB at 2 m for 2.83 V"):
+              "Passive", "Semi-active", "Active", "8.00 Ω", "Passive behind active", "dB at 2 m for 2.83 V",
+              "plots/electrical.png", "minimum is"):
         assert s in page, s
     assert "series" not in (tmp_path / "parts.csv").read_text().split("\n", 1)[1]
 
@@ -226,3 +227,68 @@ def test_run_passive_reports_the_series_fallback(tmp_path, monkeypatch):
     # the series network is rated in passive mode only, everywhere (semi-active uses the parallel boards)
     assert ("series", ("passive",)) in calls and all(m == ("passive",) for w, m in calls if w == "series")
     assert "1.00 Ω" in page   # the bare woofer pair the semi-active bass channel drives
+
+
+def test_link_states_are_the_single_source_of_every_mode_header(monkeypatch):
+    import speaker.passive_report as pr
+    from speaker.evaluate import load_design
+    from speaker.schematic import link_states, links_text, terminal_text
+    monkeypatch.setattr(pr, "impedances", lambda d, f: _resistive(f))
+    res = _result(Topology(bass_inverted=True))
+    text = pr.network_text(res, load_design(None), TL)
+    m = link_states(res.fit.topo)
+    semi = next(x for x in text.splitlines() if x.startswith("-- Semi-active mode ("))
+    assert links_text(m["Semi-active"]) in semi and all(terminal_text(t) in semi for t in m["Semi-active"]["terminals"])
+    full = next(x for x in text.splitlines() if x.startswith("-- Fully active mode"))
+    assert links_text(m["Fully active"]) in full
+    assert "two-pole" in text and "relative to each driver's own + terminal" in text
+    from speaker.crossover import WayFilter
+    from speaker.semi_active import SemiActive
+    page = pr._semi_html(SemiActive(150.0, WayFilter(0.0, 0.0, -1, ()), WayFilter(0.0, 0.0, 1, ())), res.fit.topo)
+    assert links_text(m["Semi-active"]) in page and "K1-K3" not in page
+
+
+def test_inductor_peak_current_is_the_sine_peak_at_full_voltage():
+    """1 mH (air core, DCR 0.5 ohm) in series with an 8 ohm load, 25 V rms: the most current flows at the lowest
+    frequency, 25 / |8.5 + j 2 pi 20 Hz 1 mH| = 2.941 A rms, so 4.159 A peak."""
+    from speaker.network import inductor_dcr
+    from speaker.passive_report import peak_currents
+    f = np.geomspace(20, 20000, 50)
+    parts = [Part("L_l1", "L", "in", "o", 1e-3, dcr=inductor_dcr(1e-3, cored=False)),
+             Part("coax_lf", "Z", "o", "0", 0.0)]
+    peak = peak_currents(parts, {"coax_lf": np.full(50, 8 + 0j)}, f, 25.0)
+    assert set(peak) == {"L_l1"}
+    assert peak["L_l1"] == pytest.approx(np.sqrt(2) * 25.0 / abs(8.5 + 2j * np.pi * 20.0 * 1e-3), rel=1e-6)
+    assert peak["L_l1"] == pytest.approx(4.159, abs=0.001)
+
+
+def test_peak_currents_are_in_the_parts_list_and_the_network_sheet(monkeypatch):
+    import speaker.passive_report as pr
+    from speaker.evaluate import load_design
+    monkeypatch.setattr(pr, "impedances", lambda d, f: _resistive(f))
+    d = load_design(None)
+    res = _result()
+    rows = {r["part"]: r for r in csv.DictReader(io.StringIO(pr.parts_csv(res, d)))}
+    v = d.p.drive.amp_v_rms
+    want = {m: pr.peak_currents(build(res.fit.values, res.fit.topo, m), pr.driver_loads(_resistive(pr.Z_GRID),
+                                                                                         res.fit.topo), pr.Z_GRID, v)
+            for m in ("passive", "semi_active")}
+    for n in ("L_b1", "L_h1", "L_l1", "L_t1"):
+        assert float(rows[n]["peak_a"]) == pytest.approx(max(w[n] for w in want.values() if n in w), abs=0.005)
+    assert rows["C_b1"]["peak_a"] == "" and rows["R_ls"]["peak_a"] == ""
+    text = pr.network_text(res, d, TL)
+    line = next(x for x in text.splitlines() if x.startswith("L_b1 "))
+    assert f"{max(w['L_b1'] for w in want.values() if 'L_b1' in w):.2f} A" in line
+    assert "cored: saturation current at least this" in line
+    assert "cored: saturation" not in next(x for x in text.splitlines() if x.startswith("L_l1 "))
+
+
+def test_network_sheet_gives_the_bass_band_minimum_impedance_and_the_stopbands(monkeypatch):
+    import speaker.passive_report as pr
+    from speaker.evaluate import load_design
+    from speaker.passive import STOP_DB, stopbands
+    monkeypatch.setattr(pr, "impedances", lambda d, f: _resistive(f))
+    text = pr.network_text(_result(), load_design(None), TL)
+    assert "minimum impedance in the bass band (20-500 Hz):" in text
+    lines = [x for x in text.splitlines() if x.startswith("electrical stopband")]
+    assert len(lines) == len(stopbands(200.0, 1600.0)) and all(f"limit {STOP_DB:g} dB" in x for x in lines)

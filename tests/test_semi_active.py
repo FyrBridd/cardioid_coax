@@ -75,7 +75,7 @@ def test_semi_active_text_has_two_channels_and_biquads_at_both_rates():
     sa = SemiActive(200.0, WayFilter(1.5, 0.25e-3, -1, (Peq(100.0, 2.0, 1.5),)), WayFilter(0.0, 0.0, 1, ()))
     txt = semi_active_text(sa, 2851.0, design="round-3.toml", sha="abcd1234")
     assert "bass\tdelay_ms" in txt and "coax\tgain" in txt and "# fs = 48000" in txt and "# fs = 96000" in txt
-    assert "high-pass links" in txt and "bass\tpeq\t100.0" in txt and "round-3.toml" in txt
+    assert "high-pass links" not in txt and "bass\tpeq\t100.0" in txt and "round-3.toml" in txt
     assert txt.count("lr4_lp 200 Hz") == 4 and txt.count("lr4_hp 200 Hz") == 4
 
 
@@ -128,3 +128,18 @@ def test_semi_active_coax_peqs_are_fitted_before_the_lr4_high_pass():
     sa = S._fit_at(flat, 5000.0, 150.0, 1600.0, None)
     # a flat coax way needs no EQ: the LR4 high-pass alone must not provoke a boost near fb
     assert sa.coax.peq == ()
+
+
+def test_semi_active_text_takes_its_terminals_and_links_from_link_states():
+    from speaker.schematic import link_states, links_text, terminal_text
+    sa = SemiActive(200.0, WayFilter(1.5, 0.25e-3, -1, ()), WayFilter(0.0, 0.0, 1, ()))
+    txt = semi_active_text(sa, 2851.0, design="round-3.toml", sha="abcd1234", topo=Topology(hf_inverted=True))
+    m = link_states(Topology(hf_inverted=True))["Semi-active"]
+    head = "\n".join(x for x in txt.splitlines() if x.startswith("#"))
+    assert links_text(m) in head
+    for t in m["terminals"]:
+        assert terminal_text(t) in head
+    # polarity: set in the DSP against each driver's own + terminal; the passive inversion is the network wiring
+    assert "# polarity is set in the DSP, relative to each driver's own + terminal" in head
+    assert "BASS + on the woofers' + terminal" in head
+    assert "coax HF inverted" in head and "behind K3" in head

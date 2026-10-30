@@ -78,14 +78,63 @@ def test_link_states_pin_each_mode():
     assert set(m["Passive"]["K"].values()) == {"closed"}
     semi = m["Semi-active"]
     assert semi["K"] == dict(K1="open", K2="open", K3="open", K4="closed", K5="closed")
-    assert ("COAX", "node cx (coax LF and HF networks)") in semi["terminals"]
-    assert [t for t, _ in semi["terminals"]] == ["COAX", "BASS"]
+    assert [t["name"] for t in semi["terminals"]] == ["COAX", "BASS"]
     active = m["Fully active"]
     assert active["K"]["K4"] == active["K"]["K5"] == active["K"]["K3"] == "open"
     assert active["K"]["K1"] == active["K"]["K2"] == "either"
-    assert [t for t, _ in active["terminals"]] == ["HF", "LF", "BASS"]
+    assert [t["name"] for t in active["terminals"]] == ["HF", "LF", "BASS"]
+
+
+def test_k3_to_k5_are_two_pole_links():
+    from speaker.schematic import LINK_POLES, LINK_TEXT
+    assert LINK_POLES == {"K1": 1, "K2": 1, "K3": 2, "K4": 2, "K5": 2}
+    for k in ("K3", "K4", "K5"):
+        assert LINK_TEXT[k].startswith("two-pole") and "both" in LINK_TEXT[k]
+    for k in ("K1", "K2"):
+        assert LINK_TEXT[k].startswith("one-pole")
+
+
+def test_every_active_mode_terminal_names_where_its_plus_and_minus_land():
+    m = link_states(Topology())
+    term = {(mode, t["name"]): (t["plus"], t["minus"]) for mode, v in m.items() for t in v["terminals"]}
+    assert term[("Passive", "IN")] == ("node in", "node 0")
+    assert term[("Semi-active", "COAX")] == ("node cx", "node 0 (the ground of the coax boards)")
+    assert term[("Semi-active", "BASS")] == ("the woofers' + terminal", "the woofers' − terminal")
+    assert term[("Fully active", "HF")] == ("the coax HF driver's + terminal", "the coax HF driver's − terminal")
+    assert term[("Fully active", "LF")] == ("the coax LF driver's + terminal", "the coax LF driver's − terminal")
+    assert term[("Fully active", "BASS")] == ("the woofers' + terminal", "the woofers' − terminal")
+    # in the active modes the DSP sets polarity against each driver's own + terminal
+    for mode in ("Semi-active", "Fully active"):
+        assert "relative to each driver's own + terminal" in m[mode]["polarity"]
+    inv = link_states(Topology(bass_inverted=True, hf_inverted=True))["Passive"]["polarity"]
+    assert "the woofers and the coax HF inverted" in inv and "behind K3, K5" in inv
+
+
+def test_link_and_terminal_sentences():
+    from speaker.schematic import links_text, terminal_text
+    m = link_states(Topology())
+    assert links_text(m["Semi-active"]) == "K1 open, K2 open, K3 open, K4 closed, K5 closed"
+    assert terminal_text(m["Semi-active"]["terminals"][0]) == (
+        "COAX + to node cx, COAX − to node 0 (the ground of the coax boards)")
 
 
 def test_links_svg_shows_the_states(tmp_path):
     text = _text(draw_links(Topology(), tmp_path / "links.svg").read_text())
-    assert "COAX: node cx" in text and "open" in text and "either" in text
+    assert "COAX + to node cx" in text and "open" in text and "either" in text
+    assert "two-pole" in text and "own + terminal" in text
+
+
+def test_speakers_are_marked_plus_and_inverted_ones_say_so(tmp_path):
+    parts = build(dict(SAMPLE), Topology(), "passive")
+    hf = [p for p in parts if p.name.startswith(("C_t", "L_t", "R_t")) or p.name == "coax_hf"]
+    text = _text(draw_network(hf, "HF", tmp_path / "a.svg").read_text())
+    assert "+" in text.split() and "(inverted)" not in text
+    text = _text(draw_network(hf, "HF", tmp_path / "b.svg", inverted={"coax_hf"}).read_text())
+    assert "+" in text.split() and "coax hf (inverted)" in " ".join(text.split())
+
+
+def test_the_coax_drawing_labels_node_cx(tmp_path):
+    parts = build(dict(SAMPLE), Topology(), "passive")
+    coax = [p for p in parts if not p.name.startswith(("L_b", "C_b", "R_bz", "bass"))]
+    text = _text(draw_network(coax, "Coax", tmp_path / "c.svg").read_text())
+    assert "cx" in text.split()

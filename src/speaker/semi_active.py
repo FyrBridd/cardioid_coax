@@ -1,5 +1,6 @@
 """Semi-active mode: a DSP in front of the passive coax boards. The coax LF and HF run through the passive
-coax network (the same boards as passive mode, with the coax high-pass bypassed by links) from one amp channel;
+coax network (the same boards as passive mode, with the coax high-pass taken out by links K1 and K2) from one amp
+channel;
 the bass runs bare from another. The DSP does the bass-to-coax crossover: an LR4 split at one point, the bass
 gain, delay, polarity and up to N_PEQ["bass"] PEQs, and the coax gain, delay and up to N_PEQ_COAX PEQs (the
 passive network shapes the coax too, but cannot fill the cardioid chamber's low-end droop).
@@ -10,12 +11,13 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 import numpy as np
 
-from speaker.crossover import MATCH_BANDS, Peq, WayFilter, lr4, peq, rbj_butterworth, rbj_peaking
+from speaker.crossover import MATCH_BANDS, WayFilter, lr4, peq, rbj_butterworth, rbj_peaking
 from speaker.passive import PassiveFit, Topology, bass_scale, build, driver_loads, transfers
+from speaker.schematic import link_states, links_text, terminal_text
 from speaker.scores import score_all
 from speaker.spinorama import spinorama
 from speaker.system import Ways, coax_section
@@ -121,16 +123,19 @@ def _sections(sa: SemiActive, fs: float) -> dict[str, list]:
     return out
 
 
-def semi_active_text(sa: SemiActive, tl: float, *, design: str, sha: str) -> str:
-    """The DSP stage as a setup sheet: '#' comment lines, per channel one tab-separated row each of gain,
-    delay_ms, polarity and every PEQ, then per EXPORT_FS sample rate the biquad sections. design and sha name
-    the design file and the first characters of its sha256."""
+def semi_active_text(sa: SemiActive, tl: float, *, design: str, sha: str, topo: Topology = Topology()) -> str:
+    """The DSP stage as a setup sheet: '#' comment lines (the terminals, links and polarity reference of
+    schematic.link_states(topo)["Semi-active"]), per channel one tab-separated row each of gain, delay_ms, polarity
+    and every PEQ, then per EXPORT_FS sample rate the biquad sections. design and sha name the design file and the
+    first characters of its sha256; topo is the passive network's (its coax boards' wiring)."""
+    m = link_states(topo)["Semi-active"]
     out = [
         "# Semi-active DSP stage (SIMULATED design, not measured)",
         f"# design file {design}, sha256 {sha}; trusted limit {tl:.0f} Hz",
         f"# point: bass to coax {sa.bass_coax:g} Hz",
-        "# two amp channels: bass drives the bare woofer pair; coax feeds the passive coax boards, "
-        "with the coax high-pass links fitted",
+        f"# two amp channels on {m['pairs']}, links {links_text(m)}:",
+        *(f"#   {terminal_text(t)}, feeding {t['feeds']}" for t in m["terminals"]),
+        f"# {m['polarity']}.",
         "# acoustic target: LR4 at the point; the electrical filters are the LR4 sections plus each channel's PEQs",
         "# delays are relative, the smaller is 0",
         "# gains are relative (coax 0 dB): normalise them in the DSP so the largest boost does not clip",

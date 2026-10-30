@@ -46,5 +46,15 @@ def test_cli_passive_subcommand_parses(monkeypatch, tmp_path):
     monkeypatch.setattr(pr, "run_passive", fake)
     assert main(["passive", "--trusted-limit", "2851"]) == 0
     assert calls == [(None, Path("out/passive"), (2851.0, "given on the command line"))]
-    assert main(["passive", "--params", "p.toml", "--out", str(tmp_path)]) == 0
-    assert calls[-1] == (Path("p.toml"), tmp_path, None)
+    assert main(["passive", "--params", "p.toml", "--out", str(tmp_path), "--trusted-limit", "2500"]) == 0
+    assert calls[-1] == (Path("p.toml"), tmp_path, (2500.0, "given on the command line"))
+
+
+def test_cli_passive_needs_the_trusted_limit(monkeypatch, tmp_path, capsys):
+    import speaker.passive_report as pr
+    calls = []
+    monkeypatch.setattr(pr, "run_passive", lambda *a, **k: calls.append(a))
+    assert main(["passive", "--params", "p.toml", "--out", str(tmp_path)]) == 2
+    err = capsys.readouterr().err
+    assert err.startswith("error: ") and "--trusted-limit" in err and "directivity run's trusted limit" in err
+    assert "2851" in err and calls == []

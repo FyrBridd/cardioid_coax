@@ -26,10 +26,11 @@ from .directivity_report import _CSS, _commit, _h, _jsonable, _params_sha, _row,
 from .evaluate import Design, _datasheet_fallback, ways_scores
 from .network import Part, solve
 from .passive import (
-    BOUNDS, OPTION_TEXT, TOL_FLAT_DB, TOL_SPREAD, TOL_Z_MIN, Z_GRID, PassiveFit, PassiveResult, Topology,
-    bass_scale, build, driver_loads, passive_scores, passive_total, search_passive, transfers, woofer_level_db,
+    BOUNDS, OPTION_TEXT, STOP_DB, TOL_FLAT_DB, TOL_SPREAD, TOL_Z_MIN, Z_GRID, PassiveFit, PassiveResult, Topology,
+    bass_scale, build, driver_loads, passive_scores, passive_total, search_passive, stop_grid, stopbands, transfers,
+    woofer_level_db,
 )
-from .schematic import LINK_TEXT, draw_links, draw_network, fmt_value, link_states
+from .schematic import LINK_TEXT, draw_links, draw_network, fmt_value, link_states, links_text, terminal_text
 from .scores import Score
 from .semi_active import _transfer, fit_semi_active, semi_active_text, semi_total, semi_ways
 from .spinorama import P_REF_PEAK, spinorama
@@ -59,6 +60,8 @@ MEANING = {
     "whole_rear": "the whole speaker sends more sound backwards at 150-300 Hz",
 }
 SENS_BAND = (300.0, 1000.0)  # Hz, where the system sensitivity is taken
+BASS_BAND = (20.0, 500.0)  # Hz, where the bass-band minimum impedance is taken
+_BRANCH_TEXT = {"bass": "bass", "coax_lf": "coax LF", "coax_hf": "coax HF"}
 MODES = {"passive": "Passive", "semi_active": "Semi-active", "active": "Active"}
 
 
@@ -88,6 +91,15 @@ def power_ratings(parts: list[Part], z: dict[str, np.ndarray], f: np.ndarray,
             third = per_v2 * (v_rms / 3) ** 2
             out[p.name] = (third, per_v2 * v_rms ** 2, _rating(third))
     return out
+
+
+def peak_currents(parts: list[Part], z: dict[str, np.ndarray], f: np.ndarray, v_rms: float) -> dict[str, float]:
+    """Per inductor: the peak current (A) of a sine of v_rms on the input (the peak, √2 times the rms current), the
+    largest over f. z: each driver load's impedance on f, by its part name."""
+    sol = solve(parts, f, z)
+    w = 2 * np.pi * np.asarray(f, dtype=float)
+    return {p.name: float(np.sqrt(2) * v_rms * np.max(np.abs(sol.across(p) / (p.dcr + 1j * w * p.value))))
+            for p in parts if p.kind == "L"}
 
 
 def _in_bass_network(name: str) -> bool:
@@ -132,19 +144,27 @@ def _mode_ratings(fit: PassiveFit, d: Design,
     return {m: power_ratings(build(fit.values, fit.topo, m), loads, Z_GRID, v) for m in modes}
 
 
+def _mode_currents(fit: PassiveFit, d: Design, modes: tuple[str, ...] = BOTH_MODES) -> dict[str, dict[str, float]]:
+    """peak_currents at the amp's full voltage in each mode, on Z_GRID."""
+    loads = _loads(fit, d, Z_GRID)
+    return {m: peak_currents(build(fit.values, fit.topo, m), loads, Z_GRID, d.p.drive.amp_v_rms) for m in modes}
+
+
 def _part_rows(fit: PassiveFit, d: Design, modes: tuple[str, ...] = BOTH_MODES) -> list[dict]:
-    """One row per part of the passive netlist (build order, drivers left out), the resistor rating being the
-    largest of the modes' (the series alternative is rated in passive mode only: semi-active uses the parallel
-    network's coax boards)."""
+    """One row per part of the passive netlist (build order, drivers left out), the resistor rating and an
+    inductor's peak current being the largest of the modes' (the series alternative is rated in passive mode only:
+    semi-active uses the parallel network's coax boards)."""
     ratings = _mode_ratings(fit, d, modes)
+    currents = _mode_currents(fit, d, modes)
     rows = []
     for p in build(fit.values, fit.topo, "passive"):
         if p.kind == "Z":
             continue
         rating = max((r[p.name][2] for r in ratings.values() if p.name in r), default=None)
         value, unit = _value_unit(p)
+        peak = max((c[p.name] for c in currents.values() if p.name in c), default=None)
         rows.append({"part": p, "value": value, "unit": unit, "type": _type(p, rating), "rating": rating,
-                     "modes": {m: r.get(p.name) for m, r in ratings.items()}})
+                     "modes": {m: r.get(p.name) for m, r in ratings.items()}, "peak_a": peak})
     return rows
 
 
@@ -174,11 +194,36 @@ def bound_notes(fit: PassiveFit) -> list[str]:
     return out
 
 
-def _z_min(parts: list[Part], loads: dict[str, np.ndarray], f: np.ndarray) -> tuple[float, float]:
-    """min |Z_in| (ohm) over f and where (Hz)."""
+def _z_min(parts: list[Part], loads: dict[str, np.ndarray], f: np.ndarray,
+           band: tuple[float, float] | None = None) -> tuple[float, float]:
+    """min |Z_in| (ohm) over f (only inside band, Hz, when given) and where (Hz)."""
     z = np.abs(solve(parts, f, loads).z_in)
-    i = int(np.argmin(z))
+    m = np.ones(len(f), bool) if band is None else (f >= band[0]) & (f <= band[1])
+    i = int(np.flatnonzero(m)[np.argmin(z[m])])
     return float(z[i]), float(f[i])
+
+
+def _peak_text(p: Part, peak: float | None) -> str:
+    if peak is None:
+        return "-"
+    return f"{peak:.2f} A" + (" (cored: saturation current at least this)" if p.name.startswith("L_b") else "")
+
+
+def stopband_lines(fit: PassiveFit, d: Design) -> list[str]:
+    """One sentence per far stopband of passive.stopbands: the worst |H| there re the branch's |H| at its crossover
+    point, against STOP_DB (passive mode, nominal values, the driver loads)."""
+    t, fb, fh = fit.topo, fit.bass_coax, fit.lf_hf
+    g = stop_grid(fb, fh)
+    h, _ = transfers(build(fit.values, t, "passive"), g, _loads(fit, d, g), t)
+    n, out = len(Z_GRID), []
+    for k, fc, m in stopbands(fb, fh):
+        a = 20 * np.log10(np.abs(h[k]))
+        rel = a[:n][m] - a[n if fc == fb else n + 1]
+        j = int(np.argmax(rel))
+        where = f"from {Z_GRID[m][0]:.0f} Hz up" if Z_GRID[m][0] > fc else f"up to {Z_GRID[m][-1]:.0f} Hz"
+        out.append(f"electrical stopband, {_BRANCH_TEXT[k]} {where}: worst {rel[j]:+.1f} dB at {Z_GRID[m][j]:.0f} Hz "
+                   f"re its level at {fc:g} Hz (limit {STOP_DB:g} dB){'' if rel[j] <= STOP_DB + 0.05 else ' OVER'}")
+    return out
 
 
 def _draws(tol) -> int:
@@ -224,23 +269,28 @@ def _netlist_table(fit: PassiveFit, d: Design, mode: str, rows: list[dict]) -> l
     out = []
     for p in build(fit.values, fit.topo, mode):
         if p.kind == "Z":
-            out.append([p.name, "driver", _DRIVER_TEXT[p.name], "-", "-", "-", "-", _driver_nodes(p, fit.topo)])
+            out.append([p.name, "driver", _DRIVER_TEXT[p.name], "-", "-", "-", "-", _driver_nodes(p, fit.topo), "-"])
             continue
         r = by_name[p.name]
         m = r["modes"][mode] if p.kind == "R" else None
         a = "cx (COAX)" if mode == "semi_active" and p.a == "in" else p.a  # semi-active: the amp is on COAX at cx
         out.append([p.name, fmt_value(p.kind, p.value), r["type"], TOLERANCE_TEXT,
                     f"{p.dcr:.2f} Ω" if p.kind == "L" else "-",
-                    f"{m[0]:.2f} W" if m else "-", f"{m[1]:.1f} W" if m else "-", f"{a}-{p.b}"])
-    return _table(["part", "value", "type", "tolerance", "DCR", "power at 1/3 V", "power at full V", "nodes"], out)
+                    f"{m[0]:.2f} W" if m else "-", f"{m[1]:.1f} W" if m else "-", f"{a}-{p.b}",
+                    _peak_text(p, r["peak_a"])])
+    return _table(["part", "value", "type", "tolerance", "DCR", "power at 1/3 V", "power at full V", "nodes",
+                   "peak current at full V"], out)
+
+
+def _terminals(m: dict) -> str:
+    """One mode's terminals of link_states as a sentence: where each + and - lands, and what it feeds."""
+    return "; ".join(f"{terminal_text(x)}, feeding {x['feeds']}" for x in m["terminals"])
 
 
 def _links_lines(t: Topology) -> list[str]:
     out = []
     for mode, m in link_states(t).items():
-        terms = "; ".join(f"{a}: {b}" for a, b in m["terminals"])
-        links = ", ".join(f"{k} {v}" for k, v in m["K"].items())
-        out.append(f"{mode} ({m['pairs']}): {terms}. Links: {links}.")
+        out.append(f"{mode} ({m['pairs']}): {_terminals(m)}. Links: {links_text(m)}. Polarity: {m['polarity']}.")
     out += ["('either': that link is not in the signal path in this mode.)", ""]
     out += [f"{k}: {v}" for k, v in LINK_TEXT.items()]
     return out
@@ -254,6 +304,7 @@ def _network_block(res: PassiveResult, d: Design, title: str, *, semi: bool = Tr
     v = d.p.drive.amp_v_rms
     loads = _loads(fit, d, Z_GRID)
     z, zf = _z_min(build(fit.values, t, "passive"), loads, Z_GRID)
+    zbb, zbf = _z_min(build(fit.values, t, "passive"), loads, Z_GRID, BASS_BAND)
     zs, zsf = _z_min(build(fit.values, t, "semi_active"), loads, Z_GRID)
     zb = np.abs(loads["bass"])
     rows = _part_rows(fit, d, BOTH_MODES if semi else ("passive",))
@@ -266,6 +317,8 @@ def _network_block(res: PassiveResult, d: Design, title: str, *, semi: bool = Tr
         f"impedance floor used in the fit: {fit.z_floor:g} Ω (the spec minimum is {Z_FLOOR:g} Ω)",
         f"minimum impedance: {z:.2f} Ω at {zf:.0f} Hz ({'+' if margin >= 0 else ''}{margin:.2f} Ω against "
         f"{Z_FLOOR:g} Ω) | flat23 {tol.flat23_nominal:.2f} dB (trusted, nominal values)",
+        f"minimum impedance in the bass band ({BASS_BAND[0]:g}-{BASS_BAND[1]:g} Hz): {zbb:.2f} Ω at {zbf:.0f} Hz",
+        *stopband_lines(fit, d),
         f"tolerance check ({_draws(tol)} draws, ±{TOL_SPREAD * 100:g} % on every L and C): "
         f"{'passed' if tol.passed else 'FAILED'}; worst draw {tol.z_min:.2f} Ω (limit {TOL_Z_MIN:g} Ω); flat23 "
         f"{tol.flat23_nominal:.2f} dB nominal, {tol.flat23_p95:.2f} dB at the 95th percentile (limit "
@@ -275,15 +328,18 @@ def _network_block(res: PassiveResult, d: Design, title: str, *, semi: bool = Tr
     out += [f"WARNING: {s}" for s in bound_notes(fit)]
     out += ["", f"-- Passive mode (one amp channel, {v:g} V rms, on IN) --", *_netlist_table(fit, d, "passive", rows)]
     if semi:
-        out += ["", f"-- Semi-active mode (the coax amp channel on COAX, node cx, {v:g} V rms assumed; C_h1 and "
-                    f"L_h1 out of circuit; the bass channel drives the woofers directly) --",
+        semi_m = link_states(t)["Semi-active"]
+        out += ["", f"-- Semi-active mode ({_terminals(semi_m)}; links {links_text(semi_m)}; {v:g} V rms assumed on "
+                    f"COAX) --",
                 f"coax channel minimum impedance {zs:.2f} Ω at {zsf:.0f} Hz; bass channel (bare {_wiring(t)}) "
                 f"{float(zb.min()):.2f} Ω at {float(Z_GRID[np.argmin(zb)]):.0f} Hz",
                 *_netlist_table(fit, d, "semi_active", rows)]
     else:
         out += ["", "-- Semi-active mode --",
                 "Semi-active mode uses the parallel network's coax boards; semi_active.txt is fitted to those."]
-    out += ["", "-- Fully active mode: no network parts in circuit (links K3, K4, K5 open) --",
+    full_m = link_states(t)["Fully active"]
+    out += ["", f"-- Fully active mode: no network parts in circuit ({_terminals(full_m)}; links "
+                f"{links_text(full_m)}) --",
             "", "-- Links to fit for each mode --", *_links_lines(t),
             "", "-- How the search got here --", *(f"- {n}" for n in res.notes), ""]
     return out
@@ -339,20 +395,24 @@ def network_text(result: PassiveResult, d: Design, tl: float, *, ways: Ways | No
 
 
 def parts_csv(result: PassiveResult, d: Design) -> str:
-    """The parts for a pair of speakers: part, value, unit, type, tolerance, DCR (ohm, inductors), rating (W,
-    resistors), quantity, and the network (parallel or series woofers) it belongs to."""
-    lines = ["part,value,unit,type,tolerance,dcr_ohm,rating_w,qty_pair,network"]
+    """The parts for a pair of speakers: part, value, unit, type, tolerance, DCR (ohm, inductors), peak current (A,
+    inductors: the sine peak at the amp's full voltage, the larger of the modes'; a cored coil's saturation current
+    must be at least this), rating (W, resistors), quantity, and the network (parallel or series woofers) it belongs
+    to."""
+    lines = ["part,value,unit,type,tolerance,dcr_ohm,peak_a,rating_w,qty_pair,network"]
     for res, modes in [(result, BOTH_MODES), *([(result.series, ("passive",))] if result.series is not None else [])]:
         for r in _part_rows(res.fit, d, modes):
             p = r["part"]
             lines.append(",".join([p.name, r["value"], r["unit"], r["type"], TOLERANCE_TEXT,
-                                   f"{p.dcr:.3f}" if p.kind == "L" else "", str(r["rating"] or ""), "2",
+                                   f"{p.dcr:.3f}" if p.kind == "L" else "",
+                                   f"{r['peak_a']:.2f}" if r["peak_a"] is not None else "", str(r["rating"] or ""), "2",
                                    res.fit.topo.bass_wiring]))
     return "\n".join(lines) + "\n"
 
 
 _NODES = [
-    "# nodes: in = the IN terminal (amp +); 0 = ground (amp -, and every driver's return)",
+    "# nodes: in = the IN terminal (amp +); 0 = ground (amp -, and every driver's return through its two-pole link "
+    "K3, K4 or K5)",
     "#   b1, b2 = bass low-pass (the woofers hang on the last); bz = between the Zobel's R and C",
     "#   cx = after the coax high-pass (C_h1 from in, L_h1 to ground); the coax LF and HF networks start here",
     "#   l1, l2 = coax LF low-pass; ln = after the notch (L_ln, C_ln, R_ln in parallel); lp = coax LF driver +",
@@ -472,16 +532,19 @@ def _parts_html(fit: PassiveFit, d: Design, modes: tuple[str, ...] = BOTH_MODES)
         rows.append(_row([f"<td>{e(p.name)}</td>", f'<td class="num">{e(fmt_value(p.kind, p.value))}</td>',
                           f"<td>{e(r['type'])}</td>", f"<td>{TOLERANCE_TEXT}</td>",
                           f'<td class="num">{p.dcr:.2f} Ω</td>' if p.kind == "L" else "<td>-</td>",
-                          f'<td class="num">{power}</td>', f"<td>{e(p.a)} – {e(p.b)}</td>"]))
+                          f'<td class="num">{power}</td>', f"<td>{e(p.a)} – {e(p.b)}</td>",
+                          f"<td>{e(_peak_text(p, r['peak_a']))}</td>"]))
     return ("<table><tr><th>Part</th><th>Value</th><th>Type</th><th>Tolerance</th><th>DCR</th>"
-            "<th>Power at 1/3 V / full V</th><th>Nodes</th></tr>" + "".join(rows) + "</table>")
+            "<th>Power at 1/3 V / full V</th><th>Nodes</th><th>Peak current at full V</th></tr>" + "".join(rows)
+            + "</table>")
 
 
 def _links_html(t: Topology) -> str:
     e = html.escape
     ks = list(LINK_TEXT)
     rows = [_row([f"<td><b>{e(mode)}</b><br>{e(m['pairs'])}</td>",
-                  "<td>" + "<br>".join(f"{e(a)}: {e(b)}" for a, b in m["terminals"]) + "</td>",
+                  "<td>" + "<br>".join(f"{e(terminal_text(x))}: {e(x['feeds'])}" for x in m["terminals"])
+                  + f"<br><i>{e(m['polarity'][0].upper() + m['polarity'][1:])}.</i></td>",
                   *(f"<td>{e(m['K'][k])}</td>" for k in ks)]) for mode, m in link_states(t).items()]
     return ("<table><tr><th>Mode</th><th>Terminals</th>" + "".join(f"<th>{k}</th>" for k in ks) + "</tr>"
             + "".join(rows) + "</table><ul>" + "".join(f"<li><b>{k}</b>: {e(v)}</li>" for k, v in LINK_TEXT.items())
@@ -494,6 +557,7 @@ def _summary(res: PassiveResult, d: Design, label: str, sens: str | None = None)
     e = html.escape
     fit, tol, t = res.fit, res.tolerance, res.fit.topo
     z, zf = _z_min(build(fit.values, t, "passive"), _loads(fit, d, Z_GRID), Z_GRID)
+    zbb, zbf = _z_min(build(fit.values, t, "passive"), _loads(fit, d, Z_GRID), Z_GRID, BASS_BAND)
     ok = z >= Z_FLOOR
     items = [
         f"<b>{e(label)}</b>: {e(_wiring(t))}; bass to coax {fit.bass_coax:g} Hz, coax LF to HF {fit.lf_hf:g} Hz; "
@@ -502,7 +566,8 @@ def _summary(res: PassiveResult, d: Design, label: str, sens: str | None = None)
         f'Minimum impedance <span class="{"pass" if ok else "fail"}">{z:.2f} Ω at {zf:.0f} Hz</span> '
         f"({z - Z_FLOOR:+.2f} Ω against the {Z_FLOOR:g} Ω minimum; the fit used a {fit.z_floor:g} Ω floor), "
         f"and <b>flat23 {tol.flat23_nominal:.2f} dB</b> (read the two together: a network can clear the floor by "
-        "making the bass branch high-impedance, at a cost in flatness).",
+        "making the bass branch high-impedance, at a cost in flatness). In the bass band "
+        f"({BASS_BAND[0]:g}-{BASS_BAND[1]:g} Hz) the minimum is {zbb:.2f} Ω at {zbf:.0f} Hz.",
         f'Part tolerance: <span class="{"pass" if tol.passed else "fail"}">'
         f"{'passed' if tol.passed else 'failed'}</span> (worst draw {tol.z_min:.2f} Ω; flat23 "
         f"{tol.flat23_p95:.2f} dB at the 95th percentile).",
@@ -524,16 +589,19 @@ def _tolerance_html(res: PassiveResult) -> str:
     return "<table class='meta'>" + "".join(_row([f"<td>{k}</td>", f"<td>{v}</td>"]) for k, v in rows) + "</table>"
 
 
-def _semi_html(sa) -> str:
+def _semi_html(sa, topo: Topology) -> str:
     rows = []
+    e = html.escape
     for ch in ("bass", "coax"):
         wf = getattr(sa, ch)
         eq = "<br>".join(f"{p.f0:.0f} Hz, {p.gain_db:+.1f} dB, Q {p.q:.2f}" for p in wf.peq) or "none"
         rows.append(_row([f"<td>{ch}</td>", f'<td class="num">{wf.gain_db:+.2f} dB</td>',
                           f'<td class="num">{wf.delay_s * 1e3:.2f} ms</td>', f'<td class="num">{wf.polarity:+d}</td>',
                           f"<td>{eq}</td>"]))
+    m = link_states(topo)["Semi-active"]
     return (f"<p>The DSP splits bass and coax with an LR4 at {sa.bass_coax:g} Hz; the coax channel feeds the same "
-            "passive coax boards (links K1-K3 open). Delays are relative.</p>"
+            f"passive coax boards ({e(_terminals(m))}; links {e(links_text(m))}). "
+            f"{e(m['polarity'][0].upper() + m['polarity'][1:])}. Delays are relative.</p>"
             "<table><tr><th>Channel</th><th>Gain</th><th>Delay</th><th>Polarity</th><th>PEQ (f0, gain, Q)</th></tr>"
             + "".join(rows) + '</table><p>Setup sheet with biquads: <a href="semi_active.txt">semi_active.txt</a>.</p>')
 
@@ -543,7 +611,7 @@ def run_passive(params_path: Path | None, out_dir: Path, *, trusted_limit: tuple
     parts.csv, semi_active.txt, vituixcad_netlist.txt, scores.json, the schematics and plots/. Returns the report.
 
     The fields come from design_ways (out_dir's mesh_check.json sets the trusted limit when trusted_limit is
-    None). The passive search takes tens of minutes on a real design."""
+    None; the command line always passes it). The passive search takes a minute or two on a real design."""
     out_dir = Path(out_dir)
     t0 = time.perf_counter()
     dw = design_ways(params_path, trusted_limit=trusted_limit, out_dir=out_dir)
@@ -552,7 +620,7 @@ def run_passive(params_path: Path | None, out_dir: Path, *, trusted_limit: tuple
     def z(x: np.ndarray) -> dict[str, np.ndarray]:
         return impedances(d, x)
 
-    _log(f"passive: searching the network ({len(f)} frequencies, trusted to {tl:.0f} Hz; tens of minutes)")
+    _log(f"passive: searching the network ({len(f)} frequencies, trusted to {tl:.0f} Hz; a minute or two)")
     t1 = time.perf_counter()
     res = search_passive(ways, z, tl, d.coax.hf_xo_min, z_floor=Z_FLOOR)
     _log(f"passive: search done, {time.perf_counter() - t1:.0f} s"
@@ -584,7 +652,7 @@ def run_passive(params_path: Path | None, out_dir: Path, *, trusted_limit: tuple
     sha = _params_sha(d)
     (out_dir / "network.txt").write_text(network_text(res, d, tl, ways=ways, active_total=totals["active"]))
     (out_dir / "parts.csv").write_text(parts_csv(res, d))
-    (out_dir / "semi_active.txt").write_text(semi_active_text(sa, tl, design=d.path.name, sha=sha[:8]))
+    (out_dir / "semi_active.txt").write_text(semi_active_text(sa, tl, design=d.path.name, sha=sha[:8], topo=t))
     (out_dir / "vituixcad_netlist.txt").write_text(vituixcad_netlist(res))
     (out_dir / "scores.json").write_text(json.dumps(
         _jsonable({m: [dataclasses.asdict(s) for s in v] for m, v in scores.items()}), indent=2, allow_nan=False))
@@ -593,10 +661,11 @@ def run_passive(params_path: Path | None, out_dir: Path, *, trusted_limit: tuple
         parts = build(r.fit.values, r.fit.topo, "passive")
         bass = [p for p in parts if _in_bass_network(p.name)]
         coax = [p for p in parts if not _in_bass_network(p.name)]
-        w = _wiring(r.fit.topo)
-        draw_network(bass, f"Bass low-pass ({w})", out_dir / f"schematic_bass{suffix}.svg")
+        w, rt = _wiring(r.fit.topo), r.fit.topo
+        inv = {n for n, i in (("bass", rt.bass_inverted), ("coax_hf", rt.hf_inverted)) if i}
+        draw_network(bass, f"Bass low-pass ({w})", out_dir / f"schematic_bass{suffix}.svg", inverted=inv)
         draw_network(coax, "Coax: high-pass to cx, then the LF and HF networks",
-                     out_dir / f"schematic_coax{suffix}.svg")
+                     out_dir / f"schematic_coax{suffix}.svg", inverted=inv)
         schem[suffix] = (f"schematic_bass{suffix}.svg", f"schematic_coax{suffix}.svg")
     draw_links(t, out_dir / "links.svg")
 
@@ -636,6 +705,14 @@ def run_passive(params_path: Path | None, out_dir: Path, *, trusted_limit: tuple
             solve(build(res.series.fit.values, ts, "passive"), Z_GRID, driver_loads(z(Z_GRID), ts)).z_in)
     plots.impedance(pd / "impedance.png", Z_GRID, zc, Z_FLOOR, f"{Z_FLOOR:g} Ω minimum for the SA550",
                     dashed=("Semi-active, bass channel (bare woofers)",))
+    g = stop_grid(fit.bass_coax, fit.lf_hf)
+    he, _ = transfers(build(fit.values, t, "passive"), g, driver_loads(z(g), t), t)
+    n = len(Z_GRID)
+    names = {"bass": f"bass ({_wiring(t)})", "coax_lf": "coax LF", "coax_hf": "coax HF"}
+    db = {k: 20 * np.log10(np.abs(x)) for k, x in he.items()}
+    limits = [(names[k], float(Z_GRID[m][0]), float(Z_GRID[m][-1]), float(db[k][n if fc == fit.bass_coax else n + 1])
+               + STOP_DB) for k, fc, m in stopbands(fit.bass_coax, fit.lf_hf)]
+    plots.electrical(pd / "electrical.png", Z_GRID, {names[k]: v[:n] for k, v in db.items()}, limits)
     tol = res.tolerance
     plots.tolerance_spread(pd / "tolerance.png", np.array(tol.draws_flat23), tol.flat23_nominal, tol.flat23_p95,
                            TOL_FLAT_DB,
@@ -728,6 +805,12 @@ def _html(d: Design, *, res: PassiveResult, sa, xo, scores: dict[str, list[Score
                                    f"the {Z_FLOOR:g} Ω minimum. Dashed: the bare woofers, which the bass channel "
                                    "drives in semi-active mode."),
         f'<p class="warn"><b>Semi-active bass channel:</b> {e(semi_warn)}</p>',
+        "<h2>Electrical transfer</h2>",
+        fig("plots/electrical.png", f"Each branch's terminal voltage per input volt through the passive network, on "
+                                    f"the modelled driver loads; the dashed lines are the far-stopband limits the fit "
+                                    f"holds ({STOP_DB:g} dB re the branch's level at its crossover point, from 4 times "
+                                    "past it), which the acoustic data cannot see above the trusted limit."),
+        "<ul>" + "".join(f"<li>{e(x)}</li>" for x in stopband_lines(fit, d)) + "</ul>",
         "<h2>23° response</h2>",
         fig("plots/crossover_23_passive.png", "Passive: each way at the listening angle (23°) through the network, "
                                               "and the sum, smoothed to 1/6 octave."),
@@ -760,7 +843,7 @@ def _html(d: Design, *, res: PassiveResult, sa, xo, scores: dict[str, list[Score
         '<a href="parts.csv">parts.csv</a> (the pair), '
         '<a href="vituixcad_netlist.txt">vituixcad_netlist.txt</a> (to type into VituixCAD).</p>',
         "<h2>Semi-active DSP</h2>",
-        _semi_html(sa),
+        _semi_html(sa, t),
         series,
         "<h2>How the search got here</h2>",
         ul(res.notes, "no notes"),

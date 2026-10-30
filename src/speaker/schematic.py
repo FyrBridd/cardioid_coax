@@ -10,6 +10,7 @@ one leg; where the spine forks to two drivers, the second runs on a row below th
 """
 from __future__ import annotations
 
+import textwrap
 from pathlib import Path
 
 import matplotlib
@@ -31,6 +32,8 @@ STEP = 4.4  # drawing units: a series part, and the spacing of legs at one node
 LEG = 2.7  # the height of one part in a leg
 ROW_GAP = 1.5  # clear space between a row's deepest leg and the next row
 PARALLEL_GAP = 2.8  # spacing of parts in parallel
+LABEL_CLEAR = 3.6  # how far the spine runs on past a node's legs before it drops to the next row (clears the labels)
+NODE_LABELS = ("cx",)  # nodes named on the drawing where they are not the source
 
 
 def fmt_value(kind: str, value: float) -> str:
@@ -44,9 +47,9 @@ def fmt_value(kind: str, value: float) -> str:
     return f"{v:.3g} {unit}"
 
 
-def _label(p: Part) -> str:
+def _label(p: Part, inverted: frozenset[str] = frozenset()) -> str:
     if p.kind == "Z":
-        return p.name.replace("_", " ")
+        return p.name.replace("_", " ") + ("\n(inverted)" if p.name in inverted else "")
     s = f"{p.name}\n{fmt_value(p.kind, p.value)}"
     return s + f"\nDCR {p.dcr:.2f} Ω" if p.kind == "L" else s
 
@@ -126,15 +129,19 @@ class _Net:
         return max(self.extent(first, n), max((len(c) * LEG + 1.0 for c in self.legs(n, came)), default=0.0)) + ROW_GAP
 
 
-def _draw_leg(d: schemdraw.Drawing, x: float, y: float, chain: list[Part]) -> None:
+def _draw_leg(d: schemdraw.Drawing, x: float, y: float, chain: list[Part], inverted: frozenset[str]) -> None:
     for p in chain:
         if p.kind == "Z":
             d += elm.Line().at((x, y)).down(0.6)
             d += elm.Speaker().at((x, y - 0.6))
-            d += elm.Label().at((x + 0.9, y - 0.85)).label(_label(p), halign="left")
+            d += elm.Label().at((x + 0.9, y - 0.85)).label(_label(p, inverted), halign="left")
+            # the driver's terminals: + on the network side unless the network wires it inverted
+            top, bottom = ("−", "+") if p.name in inverted else ("+", "−")
+            d += elm.Label().at((x - 0.3, y - 0.3)).label(top, fontsize=14)
+            d += elm.Label().at((x - 0.3, y - 1.75)).label(bottom, fontsize=14)
             y -= 1.1
-            d += elm.Line().at((x, y)).down(0.4)
-            y -= 0.4
+            d += elm.Line().at((x, y)).down(0.8)
+            y -= 0.8
         else:
             e = _element(p).at((x, y)).down().length(LEG).label(_label(p), loc="bottom", ofst=0.2)  # "bottom" is the right-hand side of a downward part
             d += e
@@ -153,43 +160,50 @@ def _draw_group(d: schemdraw.Drawing, x: float, y: float, grp: list[Part]) -> fl
     return x + STEP
 
 
-def _draw_row(d: schemdraw.Drawing, net: _Net, n: str, came: str | None, x: float, y: float) -> None:
+def _draw_row(d: schemdraw.Drawing, net: _Net, n: str, came: str | None, x: float, y: float,
+              inverted: frozenset[str]) -> None:
     """The spine from node n rightwards along row y, with its legs and forks."""
     while True:
         legs = net.legs(n, came)
+        if came is not None and n in NODE_LABELS:
+            d += elm.Dot().at((x, y))
+            d += elm.Label().at((x - 0.35, y + 0.45)).label(n, fontsize=13, color="blue")
         for j, chain in enumerate(legs):
             if j:
                 d += elm.Line().at((x + (j - 1) * STEP, y)).to((x + j * STEP, y))
             d += elm.Dot().at((x + j * STEP, y))
-            _draw_leg(d, x + j * STEP, y, chain)
+            _draw_leg(d, x + j * STEP, y, chain, inverted)
         x += max(len(legs) - 1, 0) * STEP
         forks = net.forks(n, came)
         if not forks:
             return
         first_node, first_grp = forks[0]
         drop = net.row_gap(n, came, first_node)
-        if legs and forks[1:]:  # the drop to the next row clears this node's legs
-            d += elm.Line().at((x, y)).right(1.2)
-            x += 1.2
+        if legs and forks[1:]:  # the drop to the next row clears this node's legs and their labels
+            d += elm.Line().at((x, y)).right(LABEL_CLEAR)
+            x += LABEL_CLEAR
         for m, grp in forks[1:]:
             d += elm.Dot().at((x, y))
             d += elm.Line().at((x, y)).to((x, y - drop))
             x2 = _draw_group(d, x, y - drop, grp)
-            _draw_row(d, net, m, n, x2, y - drop)
+            _draw_row(d, net, m, n, x2, y - drop, inverted)
             drop += net.extent(m, n) + ROW_GAP
         d += elm.Line().at((x, y)).right(0.4)
         x = _draw_group(d, x + 0.4, y, first_grp)
         n, came = first_node, n
 
 
-def draw_network(parts: list[Part], title: str, path: Path) -> Path:
-    """An SVG ladder of one sub-network; every part labelled with its name and value (inductors with DCR)."""
+def draw_network(parts: list[Part], title: str, path: Path, inverted: set[str] | frozenset[str] = frozenset()) -> Path:
+    """An SVG ladder of one sub-network; every part labelled with its name and value (inductors with DCR), every
+    driver with its + and − terminals, those in inverted (by part name) wired the other way round and labelled so,
+    and the nodes of NODE_LABELS named."""
     net = _Net(parts)
     d = schemdraw.Drawing(show=False)
+    d.config(margin=0.8)  # room for the driver labels, whose width the bounding box underestimates
     src = net.source()
     d += elm.Dot(open=True).at((0, 0)).label(f"{src}", loc="left")
     d += elm.Line().at((0, 0)).right(0.6)
-    _draw_row(d, net, src, None, 0.6, 0.0)
+    _draw_row(d, net, src, None, 0.6, 0.0, frozenset(inverted))
     d += elm.Label().at((0.0, 2.0 + PARALLEL_GAP)).label(title, halign="left", fontsize=16)
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -197,60 +211,112 @@ def draw_network(parts: list[Part], title: str, path: Path) -> Path:
     return path
 
 
+LINK_POLES = {"K1": 1, "K2": 1, "K3": 2, "K4": 2, "K5": 2}
 LINK_TEXT = {
-    "K1": "between IN and C_h1 (input of the coax high-pass)",
-    "K2": "in series with L_h1",
-    "K3": "between the bass network output and the woofers (the Zobel stays on the network side)",
-    "K4": "between the coax LF network output (after R_lp) and the LF driver",
-    "K5": "between the coax HF network output (after R_tp and the RLC shunt) and the HF driver",
+    "K1": "one-pole, between IN + (node in) and C_h1, the input of the coax high-pass",
+    "K2": "one-pole, in series with L_h1 (between L_h1 and node 0)",
+    "K3": "two-pole, between the bass network's output (its last node and node 0) and the woofers' + and − "
+          "terminals: it breaks both the hot and the return (the Zobel stays on the network side)",
+    "K4": "two-pole, between the coax LF network's output (node lp and node 0, after R_lp) and the coax LF "
+          "driver's + and − terminals: it breaks both the hot and the return",
+    "K5": "two-pole, between the coax HF network's output (node tp and node 0, after R_tp and the RLC shunt) and "
+          "the coax HF driver's + and − terminals: it breaks both the hot and the return",
 }
+_DSP_POLARITY = "polarity is set in the DSP, relative to each driver's own + terminal"
+
+
+def _driver_terminal(name: str, driver: str) -> dict[str, str]:
+    return {"name": name, "plus": f"{driver} + terminal", "minus": f"{driver} − terminal"}
 
 
 def link_states(topo: Topology) -> dict[str, dict]:
-    """Per mode: the terminal pairs with what each connects to, and the state of links K1-K5."""
-    wiring = f"bass woofers ({topo.bass_wiring})"
+    """Per mode: the terminal pairs (each terminal's name, where its + and its − land, and what it feeds), the
+    state of links K1-K5, and where the drivers' polarity is set. K3-K5 are two-pole (LINK_POLES), so in the active
+    modes each terminal pair reaches its driver alone, with no return shared with another."""
+    wiring = f"the bare woofer pair (wired in {topo.bass_wiring}), no network"
+    inv = [n for n, i in (("the woofers", topo.bass_inverted), ("the coax HF", topo.hf_inverted)) if i]
+    passive_pol = ("the network wires " + " and ".join(inv) + " inverted (driver + to node 0), in the wiring between "
+                   "the network and the driver behind " + ", ".join(k for k, i in (("K3", topo.bass_inverted),
+                                                                                   ("K5", topo.hf_inverted)) if i)
+                   if inv else "every driver is wired normally (driver + to the network output)")
+    hf = "inverted" if topo.hf_inverted else "normal"
     return {
-        "Passive": {"pairs": "1 terminal pair", "terminals": [("IN", "the amplifier")],
-                    "K": dict(K1="closed", K2="closed", K3="closed", K4="closed", K5="closed")},
+        "Passive": {"pairs": "1 terminal pair",
+                    "terminals": [{"name": "IN", "plus": "node in", "minus": "node 0",
+                                   "feeds": "the whole network (one amplifier channel)"}],
+                    "K": dict(K1="closed", K2="closed", K3="closed", K4="closed", K5="closed"),
+                    "polarity": passive_pol},
         "Semi-active": {"pairs": "2 terminal pairs",
-                        "terminals": [("COAX", "node cx (coax LF and HF networks)"),
-                                      ("BASS", f"straight to the {wiring}")],
-                        "K": dict(K1="open", K2="open", K3="open", K4="closed", K5="closed")},
+                        "terminals": [{"name": "COAX", "plus": "node cx",
+                                       "minus": "node 0 (the ground of the coax boards)",
+                                       "feeds": "the coax LF and HF networks, with the coax high-pass (C_h1, L_h1) "
+                                                "out of circuit"},
+                                      _driver_terminal("BASS", "the woofers'") | {"feeds": wiring}],
+                        "K": dict(K1="open", K2="open", K3="open", K4="closed", K5="closed"),
+                        "polarity": f"{_DSP_POLARITY}: BASS + on the woofers' + terminal; the coax boards keep "
+                                    f"their own wiring of the drivers through K4 and K5 (coax LF normal, coax HF "
+                                    f"{hf}). "
+                                    "The passive-mode wiring of the woofers is behind K3, which is open"},
         "Fully active": {"pairs": "3 terminal pairs",
-                         "terminals": [("HF", "straight to the coax HF driver"),
-                                       ("LF", "straight to the coax LF driver"),
-                                       ("BASS", f"straight to the {wiring}")],
-                         "K": dict(K1="either", K2="either", K3="open", K4="open", K5="open")},
+                         "terminals": [_driver_terminal("HF", "the coax HF driver's") | {"feeds": "the coax HF driver"},
+                                       _driver_terminal("LF", "the coax LF driver's") | {"feeds": "the coax LF driver"},
+                                       _driver_terminal("BASS", "the woofers'") | {"feeds": wiring}],
+                         "K": dict(K1="either", K2="either", K3="open", K4="open", K5="open"),
+                         "polarity": f"{_DSP_POLARITY}; K3, K4 and K5 open take the networks and their shared "
+                                     "ground (node 0) off every driver"},
     }
 
 
+def links_text(mode: dict) -> str:
+    """"K1 open, K2 open, ..." for one mode of link_states."""
+    return ", ".join(f"{k} {v}" for k, v in mode["K"].items())
+
+
+def terminal_text(t: dict) -> str:
+    """"COAX + to node cx, COAX − to node 0 (...)" for one terminal of link_states."""
+    return f"{t['name']} + to {t['plus']}, {t['name']} − to {t['minus']}"
+
+
 def draw_links(topo: Topology, path: Path) -> Path:
-    """An SVG table of the three modes: terminal pairs and what each connects to, and links K1-K5 open or closed."""
+    """An SVG table of the three modes: the terminal pairs, where each terminal's + and − land, links K1-K5 open or
+    closed, and where the drivers' polarity is set; then what each link breaks (K3-K5 two-pole)."""
     modes = link_states(topo)
     ks = list(LINK_TEXT)
-    xs = (0.02, 0.15, 0.50, 0.60, 0.69, 0.78, 0.87, 0.96)
-    fig = Figure(figsize=(15, 7.5))
+    xs = (0.02, 0.14, 0.62, 0.69, 0.76, 0.83, 0.90, 0.97)
+    rows = [max(len(m["terminals"]), 1) * 2 + 2 for m in modes.values()]  # text lines per row
+    line = 0.024
+    top = 0.86
+    fig = Figure(figsize=(16, 10))
     ax = fig.add_axes((0, 0, 1, 1))
     ax.set_axis_off()
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
-    ax.text(xs[0], 0.95, "Terminals and links by mode", fontsize=16, fontweight="bold", va="center")
-    for x, h in zip(xs, ("Mode", "Terminals", *ks)):
-        ax.text(x, 0.86, h, fontsize=12, fontweight="bold", va="center", ha="left" if x < 0.55 else "center")
-    ax.plot([0.02, 0.98], [0.82, 0.82], color="black", lw=1.2)
-    for i, (mode, m) in enumerate(modes.items()):
-        y = 0.70 - i * 0.18
+    ax.text(xs[0], 0.965, "Terminals and links by mode", fontsize=16, fontweight="bold", va="center")
+    for x, h in zip(xs, ("Mode", "Terminals (+ and − of each pair)", *(f"{k}\n{LINK_POLES[k]}-pole" for k in ks))):
+        ax.text(x, 0.915, h, fontsize=12, fontweight="bold", va="center", ha="left" if x < 0.6 else "center")
+    ax.plot([0.02, 0.98], [top + 0.01, top + 0.01], color="black", lw=1.2)
+    y0 = top
+    for (mode, m), n in zip(modes.items(), rows):
+        y = y0 - n * line / 2
         ax.text(xs[0], y, f"{mode}\n{m['pairs']}", fontsize=12, fontweight="bold", va="center", linespacing=1.5)
-        ax.text(xs[2 - 1], y, "\n".join(f"{t}: {c}" for t, c in m["terminals"]), fontsize=11, va="center",
-                linespacing=1.6)
+        lines = []
+        for t in m["terminals"]:
+            lines += [terminal_text(t), f"    feeds {t['feeds']}"]
+        lines.append(_wrap(m["polarity"][0].upper() + m["polarity"][1:] + ".", 95))
+        ax.text(xs[1], y, "\n".join(lines), fontsize=10, va="center", linespacing=1.45)
         for x, k in zip(xs[2:], ks):
             ax.text(x, y, m["K"][k], fontsize=11, va="center", ha="center")
-        ax.plot([0.02, 0.98], [y - 0.09, y - 0.09], color="0.7", lw=0.8)
-    ax.text(0.02, 0.19, "Links (removable):", fontsize=11, fontweight="bold", va="center")
+        y0 -= n * line + 0.02
+        ax.plot([0.02, 0.98], [y0 + 0.01, y0 + 0.01], color="0.7", lw=0.8)
+    ax.text(0.02, y0 - 0.02, "Links (removable):", fontsize=11, fontweight="bold", va="center")
     for j, (k, t) in enumerate(LINK_TEXT.items()):
-        ax.text(0.02, 0.15 - j * 0.035, f"{k}: {t}", fontsize=10.5, va="center")
+        ax.text(0.02, y0 - 0.055 - j * 0.032, f"{k}: {t}", fontsize=10, va="center")
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with matplotlib.rc_context({"svg.fonttype": "none"}):
         fig.savefig(path, format="svg")
     return path
+
+
+def _wrap(s: str, width: int) -> str:
+    return "\n".join(textwrap.wrap(s, width))

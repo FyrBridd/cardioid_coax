@@ -180,6 +180,27 @@ def impedance(path: Path, f: np.ndarray, curves: dict[str, np.ndarray], floor: f
     _save(fig, path)
 
 
+def electrical(path: Path, f: np.ndarray, curves: dict[str, np.ndarray],
+               limits: list[tuple[str, float, float, float]]) -> None:
+    """Each branch's voltage transfer |H| (dB) against frequency, and each far-stopband limit (curve name, f_lo,
+    f_hi Hz, level dB) as a dashed segment in that curve's colour."""
+    fig, ax = plt.subplots(figsize=(10, 5))
+    colour = {}
+    for i, (name, y) in enumerate(curves.items()):
+        colour[name] = f"C{i}"
+        ax.plot(f, y, color=colour[name], lw=2, label=name)
+    for j, (name, lo, hi, level) in enumerate(limits):
+        ax.plot([lo, hi], [level, level], color=colour[name], ls="--", lw=1.3,
+                label="stopband limits (dashed, each branch's colour)" if j == 0 else None)
+    _freq_axis(ax, f, np.inf, "")
+    top = max(float(np.nanmax(y)) for y in curves.values())
+    ax.set_ylim(max(min(float(np.nanmin(y)) for y in curves.values()), top - 80.0), top + 5.0)
+    ax.set_ylabel("|H| (dB, terminal volts per input volt)")
+    ax.set_title("Each branch's electrical transfer, passive mode (modelled driver loads, nominal part values)")
+    ax.legend(loc="lower center", fontsize=8)
+    _save(fig, path)
+
+
 def whole_rear_compare(path: Path, f: np.ndarray, rej: dict[str, np.ndarray], fc: dict[str, float]) -> None:
     """Whole-speaker L(0°) - L(180°) of several crossovers on one axis; fc: each one's bass-to-coax point (Hz)."""
     fig, ax = plt.subplots(figsize=(11, 4.5))
