@@ -305,8 +305,9 @@ def _header(d: Design, tl: float, what: str) -> list[str]:
         f"{ELECTROLYTIC_MIN * 1e6:g} µF",
         f"# power: the largest sine dissipation 20 Hz-20 kHz with 1/3 of the amp's {v:g} V rms on the input (about a "
         "tenth of full power, roughly what music averages) and with the full voltage; a resistor's rating is the "
-        f"first of {', '.join(str(r) for r in RATINGS_W)} W at or above the 1/3-voltage figure, the larger of the "
-        "passive and semi-active modes",
+        f"first of {', '.join(str(r) for r in RATINGS_W)} W at or above the 1/3-voltage figure; for the parallel "
+        "network the larger of the passive and semi-active modes, for the series alternative passive mode only "
+        "(semi-active uses the parallel network's coax boards)",
         "# nodes: in = the IN terminal (amp +), 0 = ground (amp -); see vituixcad_netlist.txt for every node",
         "",
     ]
@@ -461,10 +462,10 @@ def _score_table(cols: dict[str, list[Score]]) -> str:
             + "</table>")
 
 
-def _parts_html(fit: PassiveFit, d: Design) -> str:
+def _parts_html(fit: PassiveFit, d: Design, modes: tuple[str, ...] = BOTH_MODES) -> str:
     e = html.escape
     rows = []
-    for r in _part_rows(fit, d):
+    for r in _part_rows(fit, d, modes):
         p = r["part"]
         m = [x for x in r["modes"].values() if x]
         power = (f"{max(x[0] for x in m):.2f} W / {max(x[1] for x in m):.1f} W" if m else "-")
@@ -693,7 +694,7 @@ def _html(d: Design, *, res: PassiveResult, sa, xo, scores: dict[str, list[Score
             + (_score_table({"passive": series_scores, "active": scores["active"]}) if series_scores else "")
             + fig(schem["_series"][0], "Bass low-pass, woofers in series.")
             + fig(schem["_series"][1], "Coax network of the series alternative.")
-            + _parts_html(sr.fit, d)
+            + _parts_html(sr.fit, d, ("passive",))
             + "<h3>How the search got here</h3>" + ul(sr.notes, "no notes"))
     parts = [
         "<!doctype html><html lang='en'><head><meta charset='utf-8'>",

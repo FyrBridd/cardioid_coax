@@ -207,6 +207,12 @@ def test_run_passive_reports_the_series_fallback(tmp_path, monkeypatch):
     import speaker.passive_report as pr
     _synthetic(monkeypatch)
     monkeypatch.setattr(pr, "impedances", lambda d, f: _resistive(f, bass=1.0))   # no parallel network clears 3.5 Ω
+    calls, rows = [], pr._part_rows
+
+    def spy(fit, d, modes=pr.BOTH_MODES):
+        calls.append((fit.topo.bass_wiring, tuple(modes)))
+        return rows(fit, d, modes)
+    monkeypatch.setattr(pr, "_part_rows", spy)
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         page = pr.run_passive(None, tmp_path, trusted_limit=(TL, "test")).read_text()
@@ -216,4 +222,7 @@ def test_run_passive_reports_the_series_fallback(tmp_path, monkeypatch):
     assert nets == {"parallel", "series"}
     text = (tmp_path / "network.txt").read_text()
     assert "Alternative: the woofers in series" in text and "does not clear 3.5 Ω" in text
+    assert "for the series alternative passive mode only" in text
+    # the series network is rated in passive mode only, everywhere (semi-active uses the parallel boards)
+    assert ("series", ("passive",)) in calls and all(m == ("passive",) for w, m in calls if w == "series")
     assert "1.00 Ω" in page   # the bare woofer pair the semi-active bass channel drives
