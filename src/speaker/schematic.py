@@ -5,8 +5,8 @@ terminals and links.
 
 The drawing is derived from the parts' nodes, so any Topology draws: a part with a node "0" is a shunt; the
 chain of series parts from the source node to a driver is the spine; parts between the same two nodes (the
-notch) are drawn in parallel; a branch off the spine that ends at ground (R_bz + C_bz, R_tr + L_tr + C_tr) is
-one leg; where the spine forks to two drivers, the second runs on a row below the first.
+notch) are drawn in parallel; a branch off the spine that ends at ground (R_bz + C_bz, R_bc + L_bc + C_bc,
+R_tr + L_tr + C_tr) is one leg; where the spine forks to two drivers, the second runs on a row below the first.
 """
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ def fmt_value(kind: str, value: float) -> str:
         v, unit = value * 1e3, "mH"
     else:
         v, unit = value, "Ω"
-    return f"{v:.3g} {unit}"
+    return f"{v:.4g} {unit}" if v >= 1000 else f"{v:.3g} {unit}"  # "1200 µF", not "1.2e+03 µF"
 
 
 def _label(p: Part, inverted: frozenset[str] = frozenset()) -> str:
@@ -216,7 +216,8 @@ LINK_TEXT = {
     "K1": "one-pole, between IN + (node in) and C_h1, the input of the coax high-pass",
     "K2": "one-pole, in series with L_h1 (between L_h1 and node 0)",
     "K3": "two-pole, between the bass network's output (its last node and node 0) and the woofers' + and − "
-          "terminals: it breaks both the hot and the return (the Zobel stays on the network side)",
+          "terminals: it breaks both the hot and the return (the Zobel and the impedance-peak compensator stay on "
+          "the network side)",
     "K4": "two-pole, between the coax LF network's output (node lp and node 0, after R_lp) and the coax LF "
           "driver's + and − terminals: it breaks both the hot and the return",
     "K5": "two-pole, between the coax HF network's output (node tp and node 0, after R_tp and the RLC shunt) and "

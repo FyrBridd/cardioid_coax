@@ -31,6 +31,7 @@ Mode = Literal["passive", "semi_active"]
 class Topology:
     bass_order: int = 2  # 2 or 3
     zobel: bool = False
+    bass_comp: bool = False  # the impedance-peak compensator: R_bc, L_bc and C_bc in series across the woofers
     lf_order: int = 2  # 2 or 3
     lf_notch: bool = False
     lf_shelf: bool = False  # the coax LF contour: R_lc with L_lc across it, in series before the L-pad
@@ -49,6 +50,7 @@ def value_names(topo: Topology, mode: Mode) -> list[str]:
     if mode == "passive":
         names += ["L_b1", "C_b1"] + (["L_b2"] if topo.bass_order == 3 else [])
         names += ["R_bz", "C_bz"] if topo.zobel else []
+        names += ["R_bc", "L_bc", "C_bc"] if topo.bass_comp else []
         names += ["C_h1", "L_h1"]
     names += ["R_ls", "R_lp", "L_l1", "C_l1"] + (["L_l2"] if topo.lf_order == 3 else [])
     names += ["L_ln", "C_ln", "R_ln"] if topo.lf_notch else []
@@ -58,10 +60,13 @@ def value_names(topo: Topology, mode: Mode) -> list[str]:
     return names
 
 
-_ALL = value_names(Topology(bass_order=3, zobel=True, lf_order=3, lf_notch=True, lf_shelf=True, hf_shunt=True),
-                   "passive")
-BOUNDS: dict[str, tuple[float, float]] = {
-    n: ((0.5, 100.0) if n in ("R_lp", "R_tp") else _PREFIX_BOUNDS[n[0]]) for n in _ALL}
+_ALL = value_names(Topology(bass_order=3, zobel=True, bass_comp=True, lf_order=3, lf_notch=True, lf_shelf=True,
+                            hf_shunt=True), "passive")
+# per-name overrides: the parallel L-pad resistors, and the compensator, whose textbook values for a sealed woofer
+# pair (~1.7 mF, ~9 mH, ~3.6 ohm on round 3) lie outside the filters' ranges
+_NAME_BOUNDS = {"R_lp": (0.5, 100.0), "R_tp": (0.5, 100.0),
+                "R_bc": (1.0, 20.0), "L_bc": (1e-3, 50e-3), "C_bc": (100e-6, 3000e-6)}
+BOUNDS: dict[str, tuple[float, float]] = {n: _NAME_BOUNDS.get(n, _PREFIX_BOUNDS[n[0]]) for n in _ALL}
 
 
 def build(values: dict[str, float], topo: Topology, mode: Mode) -> list[Part]:
@@ -88,6 +93,10 @@ def build(values: dict[str, float], topo: Topology, mode: Mode) -> list[Part]:
         if topo.zobel:
             r("R_bz", end, "bz")
             c("C_bz", "bz", "0")
+        if topo.bass_comp:  # across the woofers, on the network side of K3 like the Zobel; L_bc is cored (L_b)
+            r("R_bc", end, "bc1")
+            ind("L_bc", "bc1", "bc2")
+            c("C_bc", "bc2", "0")
         parts.append(Part("bass", "Z", end, "0", 1.0))
         c("C_h1", "in", "cx")
         ind("L_h1", "cx", "0")
@@ -287,12 +296,48 @@ def _l_pad(r: float, pad_db: float) -> tuple[float, float]:
     return r * (1 - a), (r * a / (1 - a) if a < 1 else np.inf)
 
 
+COMP_FIT_TOP = 200.0  # Hz, the top of the band woofer_resonance fits the woofers' lumped impedance on
+
+
+def woofer_resonance(f: np.ndarray, z: np.ndarray) -> tuple[float, float, float, float]:
+    """(Re, fc, Qec, Qmc) of a sealed woofer load: its complex impedance z on f (Hz) up to COMP_FIT_TOP, fitted by
+    least squares (on log parameters, residual relative to |z|) with the lumped model Re + jωLe + Res / (1 + jQmc (f/fc
+    - fc/f)), started from the |Z| maximum under FIT_LO (fc, and Res above the smallest |Z| above it, taken as Re).
+    Qec = Qmc Re / Res. The model is exact for speaker.bass.sealed_impedance (the box folds into the motional
+    compliance); on a load with no resonance Res goes to its floor and Qec grows large."""
+    f, z = np.asarray(f, dtype=float), np.asarray(z, dtype=complex)
+    m = f <= COMP_FIT_TOP
+    f, z = f[m], z[m]
+    w, a = 2 * np.pi * f, np.abs(z)
+    lo = np.flatnonzero(f < FIT_LO)
+    i = int(lo[np.argmax(a[lo])])
+    re0 = float(a[i:].min())
+    x0 = np.log([re0, 1e-4, max(a[i] - re0, 0.1 * re0), w[i], 3.0])  # Re, Le, Res, w0, Qmc
+
+    def model(x: np.ndarray) -> np.ndarray:
+        re, le, res, w0, q = np.exp(x)
+        return re + 1j * w * le + res / (1 + 1j * q * (w / w0 - w0 / w))
+
+    def resid(x: np.ndarray) -> np.ndarray:
+        d = (model(x) - z) / a
+        return np.concatenate([d.real, d.imag])
+
+    lb = np.log([1e-3, 1e-9, 1e-6, 2 * np.pi * 5.0, 0.05])
+    ub = np.log([1e3, 1.0, 1e6, 2 * np.pi * 2 * FIT_LO, 100.0])
+    x = least_squares(resid, np.clip(x0, lb + 1e-9, ub - 1e-9), bounds=(lb, ub), xtol=1e-12, ftol=1e-12,
+                      gtol=1e-12).x
+    re, _, res, w0, q = np.exp(x)
+    return float(re), float(w0 / (2 * np.pi)), float(q * re / res), float(q)
+
+
 def start_values(topo: Topology, fb: float, fh: float, z_at: dict[str, np.ndarray],
                  pad_db: dict[str, float] | None = None) -> dict[str, float]:
     """The fit's start (passive mode): textbook Butterworth filters at fb and fh, each on its load's |Z| at that
     point (z_at: driver_loads on Z_GRID), L-pads that attenuate the coax LF and HF by pad_db (dB, default 0)
-    and still present that |Z|, the notch tuned to NOTCH_HZ and the shunt to SHUNT_HZ at Q 1. Every value
-    is clipped into BOUNDS."""
+    and still present that |Z|, the notch tuned to NOTCH_HZ and the shunt to SHUNT_HZ at Q 1, and the textbook
+    impedance-peak compensator of the bass load's box resonance (woofer_resonance's Re, fc, Qec and Qmc: C = 1 /
+    (2π fc Re Qec), L = Re Qec / (2π fc), R = Re (1 + Qec / Qmc), the dual of the motional R-L-C, so that with it
+    the load is Re). Every value is clipped into BOUNDS."""
     pad = pad_db or {}
     wb, wh = 2 * np.pi * fb, 2 * np.pi * fh
     rb, rcx = _mag(z_at, "bass", fb), _mag(z_at, "coax_lf", fb)
@@ -303,6 +348,9 @@ def start_values(topo: Topology, fb: float, fh: float, z_at: dict[str, np.ndarra
     else:
         v.update(L_b1=np.sqrt(2) * rb / wb, C_b1=1 / (np.sqrt(2) * wb * rb))
     v.update(R_bz=rb, C_bz=1 / (wb * rb))  # Zobel: the bass load's |Z|, corner at fb
+    if topo.bass_comp:
+        re, fc, qec, qmc = woofer_resonance(Z_GRID, z_at["bass"])
+        v.update(R_bc=re * (1 + qec / qmc), L_bc=re * qec / (2 * np.pi * fc), C_bc=1 / (2 * np.pi * fc * re * qec))
     v.update(C_h1=1 / (np.sqrt(2) * wb * rcx), L_h1=np.sqrt(2) * rcx / wb)
     if topo.lf_order == 3:
         v.update(L_l1=1.5 * rl / wh, C_l1=4 / 3 / (wh * rl), L_l2=0.5 * rl / wh)
@@ -497,8 +545,11 @@ def fit_passive_at(ways: Ways, z: Callable[[np.ndarray], dict[str, np.ndarray]],
     return PassiveFit(fb, fh, topo, vals, continuous, z_floor, z_min, z_min >= z_floor, cost)
 
 
-OPTIONS = ("lf_shelf", "zobel", "bass_order", "lf_order", "lf_notch", "hf_shunt")  # in this order; an order "on" is 3
-OPTION_TEXT = {"lf_shelf": "the coax LF contour (R_lc with L_lc across it)",
+# in this order; an order "on" is 3. The compensator goes first, so the bass low-pass can be a proper 2nd-order
+# section from then on instead of resonating with the woofers' box peak.
+OPTIONS = ("bass_comp", "lf_shelf", "zobel", "bass_order", "lf_order", "lf_notch", "hf_shunt")
+OPTION_TEXT = {"bass_comp": "an impedance-peak compensator across the woofers",
+               "lf_shelf": "the coax LF contour (R_lc with L_lc across it)",
                "zobel": "the Zobel across the woofers", "bass_order": "a 3rd-order bass low-pass",
                "lf_order": "a 3rd-order coax LF low-pass", "lf_notch": f"the coax LF notch at {NOTCH_HZ:g} Hz",
                "hf_shunt": "the RLC shunt across the coax HF"}

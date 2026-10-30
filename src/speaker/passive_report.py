@@ -43,7 +43,7 @@ RATINGS_W = (5, 10, 15, 20, 30, 50)  # standard resistor power ratings
 TOLERANCE_TEXT = "5 %"
 ELECTROLYTIC_MIN = 30e-6  # F, bipolar electrolytics are allowed above this, outside the coax network
 SHORTFALL_DB = 0.25  # dB, a score difference at least this large is reported
-_BASS_NETWORK = ("L_b", "C_b", "R_bz")  # name prefixes of the bass low-pass and its Zobel
+_BASS_NETWORK = ("L_b", "C_b", "R_bz", "R_bc")  # name prefixes of the bass low-pass, its Zobel and its compensator
 # parts at the end of their range where they barely act: L-pad resistors (a series one small, a parallel one
 # large) and the coax HF's second series capacitor (large: nearly a plain wire, the high-pass close to 2nd order)
 _FADING = {("R_ls", "lower"), ("R_ts", "lower"), ("R_lp", "upper"), ("R_tp", "upper"), ("C_t2", "upper")}
@@ -181,7 +181,7 @@ def bound_notes(fit: PassiveFit) -> list[str]:
         else:
             continue
         s = f"{n} is at the {fmt_value(n[0], limit)} limit of the search (its {end} end)"
-        if n.startswith("L_b") and end == "upper":
+        if n in ("L_b1", "L_b2") and end == "upper":
             s += (": the network may be buying the impedance floor with bass loss; compare flat23 with the "
                   "active fit's.")
         elif (n, end) in _FADING:
@@ -261,10 +261,11 @@ def _polarity_text(t: Topology) -> str:
 
 
 def _options_text(t: Topology) -> str:
-    on = [OPTION_TEXT[k] for k, v in (("lf_shelf", t.lf_shelf), ("zobel", t.zobel), ("bass_order", t.bass_order == 3),
-                                      ("lf_order", t.lf_order == 3), ("lf_notch", t.lf_notch),
-                                      ("hf_shunt", t.hf_shunt)) if v]
-    return ", ".join(on) if on else "none (2nd-order bass and coax LF, no contour, Zobel, notch or shunt)"
+    on = [OPTION_TEXT[k] for k, v in (("bass_comp", t.bass_comp), ("lf_shelf", t.lf_shelf), ("zobel", t.zobel),
+                                      ("bass_order", t.bass_order == 3), ("lf_order", t.lf_order == 3),
+                                      ("lf_notch", t.lf_notch), ("hf_shunt", t.hf_shunt)) if v]
+    return ", ".join(on) if on else ("none (2nd-order bass and coax LF, no compensator, contour, Zobel, notch or "
+                                     "shunt)")
 
 
 def _table(head: list[str], rows: list[list[str]]) -> list[str]:
@@ -436,6 +437,7 @@ _NODES = [
     "# nodes: in = the IN terminal (amp +); 0 = ground (amp -, and every driver's return through its two-pole link "
     "K3, K4 or K5)",
     "#   b1, b2 = bass low-pass (the woofers hang on the last); bz = between the Zobel's R and C",
+    "#   bc1, bc2 = inside the impedance-peak compensator across the woofers (R_bc, L_bc, C_bc in series)",
     "#   cx = after the coax high-pass (C_h1 from in, L_h1 to ground); the coax LF and HF networks start here",
     "#   l1, l2 = coax LF low-pass; ln = after the notch (L_ln, C_ln, R_ln in parallel); lp = coax LF driver +",
     "#   t1, t2 = coax HF high-pass; tp = coax HF driver +; tr1, tr2 = inside the RLC shunt across the HF",

@@ -18,7 +18,7 @@ from speaker.passive import (
 
 F = np.geomspace(20, 20000, 300)
 R8 = {k: np.full(len(F), 8.0 + 0j) for k in ("bass", "coax_lf", "coax_hf")}
-FULL = Topology(bass_order=3, zobel=True, lf_order=3, lf_notch=True, lf_shelf=True, hf_shunt=True)
+FULL = Topology(bass_order=3, zobel=True, bass_comp=True, lf_order=3, lf_notch=True, lf_shelf=True, hf_shunt=True)
 
 
 def _values(t, mode="passive"):
@@ -712,3 +712,94 @@ def test_no_acoustic_peak_below_the_fitted_band(monkeypatch):
     monkeypatch.setattr(P, "PEAK_TOL_DB", 100.0)
     free = fit_passive_at(rolled, z, 2851.0, 170.0, 1200.0, t)
     assert held.values == free.values and held.cost == pytest.approx(free.cost)
+
+
+# ---- the impedance-peak compensator across the woofers (follow-up: the owner chose it, 2026-10-30)
+
+def _round3_pair(f):
+    """The real woofer pair (two RSS265HO-44, parallel) in round 3's sealed box: the lumped impedance, and the
+    driver and the volume each woofer sees."""
+    from pathlib import Path
+
+    from speaker.bass import sealed_impedance
+    from speaker.drivers import load_driver
+    from speaker.layout import compute_layout
+    from speaker.params import load_params
+    p = load_params(Path(__file__).resolve().parents[1] / "params" / "round-3.toml")
+    d = load_driver(p.bass)
+    vb = compute_layout(p, load_driver(p.coax), d).bass_net / 2
+    return sealed_impedance(d, vb, f) / 2, d, vb
+
+
+def _textbook_comp(re, fc, qec, qmc):
+    """The series R-L-C that cancels a sealed woofer's box resonance: (R, L, C)."""
+    return re * (1 + qec / qmc), re * qec / (2 * np.pi * fc), 1 / (2 * np.pi * fc * re * qec)
+
+
+def _rlc(f, r, l, c):
+    w = 2 * np.pi * np.asarray(f, dtype=float)
+    return r + 1j * w * l + 1 / (1j * w * c)
+
+
+def test_bass_comp_flattens_the_woofer_impedance_peak():
+    """Across the real pair in round 3's box, the textbook compensator (from the sealed alignment) takes the 20-200 Hz
+    peak-to-minimum |Z| ratio from ~9 to under 1.5, and start_values derives the same parts from the impedance."""
+    from speaker.bass import sealed_alignment
+    f = np.geomspace(20.0, 200.0, 400)
+    z, d, vb = _round3_pair(f)
+    a = sealed_alignment(d, vb)
+    r, l, c = _textbook_comp(d.re / 2, a.fc, d.qes * a.fc / d.fs, d.qms * a.fc / d.fs)
+    zc = _rlc(f, r, l, c)
+    both = z * zc / (z + zc)
+    assert np.abs(z).max() / np.abs(z).min() > 8.0
+    assert np.abs(both).max() / np.abs(both).min() < 1.5
+    t = Topology(bass_comp=True)
+    v = start_values(t, 170.0, 1600.0, driver_loads({"bass_pair": _round3_pair(Z_GRID)[0],
+                                                     "coax_lf": np.full(len(Z_GRID), 8.0 + 0j),
+                                                     "coax_hf": np.full(len(Z_GRID), 8.0 + 0j)}, t))
+    assert v["R_bc"] == pytest.approx(r, rel=1e-3)
+    assert v["L_bc"] == pytest.approx(l, rel=1e-3)
+    assert v["C_bc"] == pytest.approx(c, rel=1e-3)
+
+
+def test_bass_comp_values_and_netlist():
+    from speaker.passive import OPTION_TEXT, OPTIONS
+    t = Topology(zobel=True, bass_comp=True)
+    names = value_names(t, "passive")
+    assert names[:7] == ["L_b1", "C_b1", "R_bz", "C_bz", "R_bc", "L_bc", "C_bc"]
+    assert value_names(Topology(bass_comp=True), "passive")[:5] == ["L_b1", "C_b1", "R_bc", "L_bc", "C_bc"]
+    assert not {"R_bc", "L_bc", "C_bc"} & set(value_names(t, "semi_active"))
+    assert "R_bc" not in value_names(Topology(), "passive")
+    assert BOUNDS["C_bc"] == (100e-6, 3000e-6) and BOUNDS["L_bc"] == (1e-3, 50e-3) and BOUNDS["R_bc"] == (1.0, 20.0)
+    assert OPTIONS[0] == "bass_comp" and OPTIONS.index("lf_shelf") == 1
+    assert OPTION_TEXT["bass_comp"] == "an impedance-peak compensator across the woofers"
+    # a series R-L-C from the woofers' node to ground, on the network side (the woofers hang on the same node)
+    for topo, end in ((t, "b1"), (Topology(bass_order=3, bass_comp=True), "b2")):
+        parts = {p.name: p for p in build(_values(topo), topo, "passive")}
+        assert (parts["R_bc"].a, parts["R_bc"].b) == (end, "bc1")
+        assert (parts["L_bc"].a, parts["L_bc"].b) == ("bc1", "bc2")
+        assert (parts["C_bc"].a, parts["C_bc"].b) == ("bc2", "0")
+        assert (parts["bass"].a, parts["bass"].b) == (end, "0")
+        assert parts["L_bc"].dcr == pytest.approx(inductor_dcr(SAMPLE["L_bc"], cored=True))
+    assert not {"R_bc", "L_bc", "C_bc"} & {p.name for p in build(_values(t), t, "semi_active")}
+    # start values: the textbook compensator of a hand-made woofer, Re 3.2 ohm with a box resonance at 40 Hz
+    re, fc, qec, qmc, le = 3.2, 40.0, 0.75, 6.6, 1.5e-3
+    w, w0 = 2 * np.pi * Z_GRID, 2 * np.pi * fc
+    res = re * qmc / qec
+    zm = 1 / (1 / res + 1 / (1j * w * res / (qmc * w0)) + 1j * w * qmc / (res * w0))
+    z = {"bass_pair": re + 1j * w * le + zm, "coax_lf": np.full(len(w), 8.0 + 0j),
+         "coax_hf": np.full(len(w), 8.0 + 0j)}
+    tc = Topology(bass_comp=True)
+    v = start_values(tc, 170.0, 1600.0, driver_loads(z, tc))
+    r, l, c = _textbook_comp(re, fc, qec, qmc)
+    assert v["R_bc"] == pytest.approx(r, rel=1e-3) and v["L_bc"] == pytest.approx(l, rel=1e-3)
+    assert v["C_bc"] == pytest.approx(c, rel=1e-3)
+    # the same woofers in series: four times the impedance, so R and L four times, C a quarter
+    ts = Topology(bass_comp=True, bass_wiring="series")
+    vs = start_values(ts, 170.0, 1600.0, driver_loads(z, ts))
+    assert vs["R_bc"] == pytest.approx(4 * r, rel=1e-3) and vs["L_bc"] == pytest.approx(4 * l, rel=1e-3)
+    assert vs["C_bc"] == pytest.approx(c / 4, rel=1e-3)
+    # a load with no resonance (resistive) still gives values inside the bounds
+    vr = start_values(tc, 170.0, 1600.0, driver_loads(_resistive(bass=4.0)(Z_GRID), tc))
+    for n in ("R_bc", "L_bc", "C_bc"):
+        assert BOUNDS[n][0] < vr[n] < BOUNDS[n][1]

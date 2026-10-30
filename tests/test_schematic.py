@@ -9,7 +9,7 @@ from fakes import SAMPLE
 from speaker.passive import Topology, build
 from speaker.schematic import draw_links, draw_network, fmt_value, link_states
 
-FULL = Topology(bass_order=3, zobel=True, lf_order=3, lf_notch=True, lf_shelf=True, hf_shunt=True)
+FULL = Topology(bass_order=3, zobel=True, bass_comp=True, lf_order=3, lf_notch=True, lf_shelf=True, hf_shunt=True)
 
 
 def _text(svg: str) -> str:
@@ -27,6 +27,7 @@ def test_fmt_value():
     assert fmt_value("R", 3.3) == "3.3 Ω"
     assert fmt_value("L", 0.3e-3) == "0.3 mH"
     assert fmt_value("C", 100e-6) == "100 µF"
+    assert fmt_value("C", 1.2e-3) == "1200 µF" and fmt_value("C", 3000e-6) == "3000 µF"   # the compensator's range
 
 
 def test_network_svg_names_every_part(tmp_path):
@@ -45,9 +46,9 @@ def test_network_svg_names_every_part(tmp_path):
 def test_full_network_draws_every_part(tmp_path, subset):
     parts = build(dict(SAMPLE), FULL, "passive")
     if subset == "bass":
-        parts = [p for p in parts if p.name.startswith(("L_b", "C_b", "R_bz")) or p.name == "bass"]
+        parts = [p for p in parts if p.name.startswith(("L_b", "C_b", "R_bz", "R_bc")) or p.name == "bass"]
     elif subset == "coax":
-        parts = [p for p in parts if not p.name.startswith(("L_b", "C_b", "R_bz", "bass"))]
+        parts = [p for p in parts if not p.name.startswith(("L_b", "C_b", "R_bz", "R_bc", "bass"))]
     text = _flat(_text(draw_network(parts, subset, tmp_path / f"{subset}.svg").read_text()))
     for p in parts:
         assert _flat(p.name) in text
@@ -135,6 +136,19 @@ def test_speakers_are_marked_plus_and_inverted_ones_say_so(tmp_path):
 
 def test_the_coax_drawing_labels_node_cx(tmp_path):
     parts = build(dict(SAMPLE), Topology(), "passive")
-    coax = [p for p in parts if not p.name.startswith(("L_b", "C_b", "R_bz", "bass"))]
+    coax = [p for p in parts if not p.name.startswith(("L_b", "C_b", "R_bz", "R_bc", "bass"))]
     text = _text(draw_network(coax, "Coax", tmp_path / "c.svg").read_text())
     assert "cx" in text.split()
+
+
+def test_the_compensator_is_one_three_part_leg_across_the_woofers(tmp_path):
+    from speaker.schematic import LINK_TEXT, _Net
+    t = Topology(zobel=True, bass_comp=True)
+    parts = [p for p in build(dict(SAMPLE), t, "passive")
+             if p.name.startswith(("L_b", "C_b", "R_b")) or p.name == "bass"]
+    legs = [[p.name for p in c] for c in _Net(parts).legs("b1", "in")]
+    assert ["R_bc", "L_bc", "C_bc"] in legs and ["R_bz", "C_bz"] in legs
+    text = _flat(_text(draw_network(parts, "Bass", tmp_path / "b.svg").read_text()))
+    for n in ("R_bc", "L_bc", "C_bc"):
+        assert _flat(n) in text
+    assert "compensator" in LINK_TEXT["K3"]

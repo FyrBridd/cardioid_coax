@@ -317,3 +317,21 @@ def test_network_sheet_and_report_give_the_largest_branch_gain_and_the_rise_belo
     assert len(bare) == 2 and "below" not in bare[0]
     page = pr._summary(res, d, "Passive network", peak=lines[0])
     assert "Largest branch voltage gain" in page and "below 100 Hz" in page
+
+
+def test_the_compensator_is_in_the_bass_network_with_a_cored_coil_and_a_bipolar_electrolytic(monkeypatch):
+    import speaker.passive_report as pr
+    from speaker.evaluate import load_design
+    monkeypatch.setattr(pr, "impedances", lambda d, f: _resistive(f))
+    d = load_design(None)
+    res = _result(Topology(zobel=True, bass_comp=True))
+    rows = {r["part"]: r for r in csv.DictReader(io.StringIO(pr.parts_csv(res, d)))}
+    assert {"R_bc", "L_bc", "C_bc"} <= set(rows)
+    assert rows["C_bc"]["type"] == "bipolar electrolytic capacitor"   # 1500 µF in the bass network
+    assert rows["L_bc"]["type"] == "cored inductor" and float(rows["L_bc"]["peak_a"]) > 0
+    assert rows["R_bc"]["type"].startswith("resistor (")
+    assert all(pr._in_bass_network(n) for n in ("R_bc", "L_bc", "C_bc"))
+    text = pr.network_text(res, d, TL)
+    assert "cored: saturation current at least this" in next(x for x in text.splitlines() if x.startswith("L_bc "))
+    assert "an impedance-peak compensator across the woofers" in text
+    assert "bc1" in pr.vituixcad_netlist(res) and "bc1, bc2" in pr.vituixcad_netlist(res)
