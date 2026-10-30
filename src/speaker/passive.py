@@ -442,21 +442,25 @@ def _polarity(t: Topology) -> str:
 
 
 def _grid(ways: Ways, z: Callable[[np.ndarray], dict[str, np.ndarray]], tl: float, lf_hf: list[float],
-          base: Topology, z_floor: float) -> tuple[PassiveFit, dict[str, float], int]:
-    """At every grid pair, the lowest-cost of the four polarity pairs; pick among those with every trusted
-    SEARCH_KEYS score (grid order, bass_coax outer, lf_hf inner). Returns the fit, its scores and the count."""
+          base: Topology, z_floor: float) -> tuple[PassiveFit, dict[str, float], int, bool]:
+    """At every grid pair, the best of the four polarity pairs by (shortfall under the floor, cost), the key
+    fit_passive_at's own descent uses; pick among those with every trusted SEARCH_KEYS score (grid order,
+    bass_coax outer, lf_hf inner), only the z_ok ones when there are any. Returns the fit, its scores, the
+    candidate count and whether any candidate was z_ok."""
     cands = []
     for fb in BASS_COAX_GRID:
         for fh in lf_hf:
             fit = min((fit_passive_at(ways, z, tl, fb, fh, replace(base, bass_inverted=bi, hf_inverted=hi), z_floor)
-                       for bi in (False, True) for hi in (False, True)), key=lambda x: x.cost)
+                       for bi in (False, True) for hi in (False, True)),
+                      key=lambda x: (max(0.0, x.z_floor - x.z_min), x.cost))
             v = _trusted(passive_scores(ways, fit, z, tl))
             if len(v) == len(SEARCH_KEYS):
                 cands.append(((fit, v), v))
     if not cands:
         raise ValueError(f"no passive crossover candidate has all {len(SEARCH_KEYS)} trusted search scores")
-    fit, v = pick(cands)
-    return fit, v, len(cands)
+    ok = [c for c in cands if c[0][0].z_ok]
+    fit, v = pick(ok or cands)
+    return fit, v, len(cands), bool(ok)
 
 
 def _tolerance_why(tol: Tolerance) -> str:
@@ -470,9 +474,9 @@ def _tolerance_why(tol: Tolerance) -> str:
 
 
 def _search(ways: Ways, z: Callable[[np.ndarray], dict[str, np.ndarray]], tl: float, lf_hf: list[float],
-            base: Topology, z_floor: float) -> PassiveResult:
-    """Steps 1-3 of search_passive for one bass wiring."""
-    fit, v, count = _grid(ways, z, tl, lf_hf, base, z_floor)
+            base: Topology, z_floor: float) -> tuple[PassiveResult, bool]:
+    """Steps 1-3 of search_passive for one bass wiring, and whether any grid candidate cleared the floor."""
+    fit, v, count, any_ok = _grid(ways, z, tl, lf_hf, base, z_floor)
     notes = [f"Chose {fit.bass_coax:g} Hz bass to coax and {fit.lf_hf:g} Hz coax LF to HF from {count} grid pairs, "
              f"woofers in {base.bass_wiring} ({_polarity(fit.topo)}): flat23 {v['flat23']:.2f} dB, "
              f"whole_rear {v['whole_rear']:.2f} dB."]
@@ -485,6 +489,12 @@ def _search(ways: Ways, z: Callable[[np.ndarray], dict[str, np.ndarray]], tl: fl
             why = "not every search score is trusted with it"
         elif fit.z_ok and not new.z_ok:
             why = f"it takes the impedance to {new.z_min:.2f} Ω, under the {fit.z_floor:g} Ω floor"
+        elif new.z_ok and not fit.z_ok:  # the floor outranks the scores
+            notes.append(f"Kept {OPTION_TEXT[opt]}: it lifts the impedance from {fit.z_min:.2f} Ω to "
+                         f"{new.z_min:.2f} Ω, clearing the {fit.z_floor:g} Ω floor (flat23 {v['flat23']:.2f} → "
+                         f"{nv['flat23']:.2f} dB).")
+            fit, v = new, nv
+            continue
         else:
             why = _option_verdict(v, nv)
         if why:
@@ -521,14 +531,16 @@ def _search(ways: Ways, z: Callable[[np.ndarray], dict[str, np.ndarray]], tl: fl
                      f"{tol.z_min:.2f} Ω (limit {TOL_Z_MIN:g} Ω), flat23 "
                      f"{tol.flat23_p95 - tol.flat23_nominal:+.2f} dB at the 95th percentile on the nominal "
                      f"{tol.flat23_nominal:.2f} dB (limit +{TOL_FLAT_DB:g} dB).")
-    return PassiveResult(fit, tol, None, notes)
+    return PassiveResult(fit, tol, None, notes), any_ok
 
 
 def search_passive(ways: Ways, z: Callable[[np.ndarray], dict[str, np.ndarray]], tl: float,
                    lf_hf_min: float | None, z_floor: float = 3.5) -> PassiveResult:
-    """The passive network: (1) at every grid pair (LF_HF_GRID floored at lf_hf_min) the lowest-cost polarity
-    pair, scored by passive_scores, the points chosen with xo_fit.pick; (2) at those points, each of OPTIONS
-    in turn, kept when _option_verdict allows and the floor still holds; (3) while the tolerance check fails,
+    """The passive network: (1) at every grid pair (LF_HF_GRID floored at lf_hf_min) the polarity pair with the
+    least shortfall under the floor, then the lowest cost, scored by passive_scores, the points chosen with
+    xo_fit.pick (among the z_ok candidates when there are any); (2) at those points, each of OPTIONS in turn,
+    kept when it lifts a network that misses the floor over it, or when _option_verdict allows and the floor
+    still holds; (3) while the tolerance check fails,
     the network meets its floor and the floor is under FLOOR_MAX, a refit at the same points and topology with
     the floor FLOOR_STEP higher, stopping (and keeping the last network that met its floor, with its tolerance
     result) at a refit that misses the raised floor; (4) if the final network's z_min is under z_floor (never
@@ -538,11 +550,14 @@ def search_passive(ways: Ways, z: Callable[[np.ndarray], dict[str, np.ndarray]],
     if not lf_hf:
         raise ValueError(f"no LF-HF grid point is at or above the driver's {lf_hf_min:g} Hz; "
                          f"the grid stops at {LF_HF_GRID[-1]:g} Hz")
-    res = _search(ways, z, tl, lf_hf, Topology(), z_floor)
+    res, any_ok = _search(ways, z, tl, lf_hf, Topology(), z_floor)
     if res.fit.z_min >= z_floor:
         return res
-    series = _search(ways, z, tl, lf_hf, Topology(bass_wiring="series"), z_floor)
+    series, _ = _search(ways, z, tl, lf_hf, Topology(bass_wiring="series"), z_floor)
     tail = "" if series.fit.z_min >= z_floor else f", though it does not clear {z_floor:g} Ω either"
-    note = (f"No parallel-woofer network clears {z_floor:g} Ω (its lowest is {res.fit.z_min:.2f} Ω); "
-            f"the woofers-in-series alternative is attached{tail}.")
+    if any_ok:
+        head = f"The chosen parallel-woofer network does not clear {z_floor:g} Ω"
+    else:
+        head = f"No parallel-woofer network in the search clears {z_floor:g} Ω"
+    note = f"{head} (its lowest is {res.fit.z_min:.2f} Ω); the woofers-in-series alternative is attached{tail}."
     return replace(res, series=series, notes=[*res.notes, note])

@@ -229,9 +229,11 @@ def test_search_with_no_lf_hf_point_above_the_driver_minimum_raises(monkeypatch)
 
 
 def test_search_falls_back_to_series_woofers_when_no_parallel_network_clears_the_floor(monkeypatch):
-    # 1 ohm: even the largest bass inductor (20 mH, with its DCR) leaves |Z_in| at 20 Hz under 3.5 ohm
+    # 1 ohm, 2nd-order bass: even the largest bass inductor (20 mH, with its DCR) leaves |Z_in| at 20 Hz under
+    # 3.5 ohm. No options: a 3rd-order bass adds a second series inductor and can clear it (and would be kept).
     from speaker.passive import search_passive
     _small_search(monkeypatch)
+    monkeypatch.setattr("speaker.passive.OPTIONS", ())
     res = search_passive(omni_ways(FIT_F), _resistive(bass=1.0), 2851.0, lf_hf_min=1200.0)
     assert res.fit.z_ok is False
     assert res.series is not None and res.series.fit.topo.bass_wiring == "series"
@@ -357,3 +359,70 @@ def test_the_floor_is_raised_while_the_tolerance_check_fails_and_the_refit_meets
     assert floors[-1] == pytest.approx(3.6) and max(floors) == pytest.approx(3.6)
     assert res.series is None
     assert any(n.startswith("Raised the impedance floor to 3.6 Ω") for n in res.notes)
+
+
+_SCORES = dict(window_spread=1.0, presence_lift=1.0, di_smooth_bass=0.5, di_smooth_lfhf=0.5, flat23=1.0,
+               whole_rear=10.0)
+
+
+def _fake_search(monkeypatch, fit_of, scores_of=lambda fit: {}, grid=((170.0,), (1600.0,))):
+    """search_passive with fit_passive_at, passive_scores and tolerance faked: fit_of(fb, topo) gives
+    (z_min, cost), scores_of(fit) overrides _SCORES, and the tolerance check always passes. Returns the
+    topologies fit_passive_at was asked for."""
+    import speaker.passive as P
+    from speaker.scores import Score
+    monkeypatch.setattr(P, "BASS_COAX_GRID", grid[0])
+    monkeypatch.setattr(P, "LF_HF_GRID", grid[1])
+    calls = []
+
+    def fit(ways, z, tl, fb, fh, topo, z_floor=3.5):
+        calls.append(topo)
+        z_min, cost = fit_of(fb, topo)
+        return PassiveFit(fb, fh, topo, {n: SAMPLE[n] for n in value_names(topo, "passive")}, {}, z_floor, z_min,
+                          z_min >= z_floor, cost)
+
+    def scores(ways, fit, z, tl, mode="passive"):
+        return [Score(k, k, v, "dB", "info", (100.0, tl), "trusted", "") for k, v in (_SCORES | scores_of(fit)).items()]
+    monkeypatch.setattr(P, "fit_passive_at", fit)
+    monkeypatch.setattr(P, "passive_scores", scores)
+    monkeypatch.setattr(P, "tolerance", lambda *a, **k: P.Tolerance(5.0, 1.0, 1.0, (10.0, 10.0), True))
+    return calls
+
+
+def test_polarity_choice_puts_the_floor_before_the_cost(monkeypatch):
+    from speaker.passive import search_passive
+
+    def fit_of(fb, t):  # the cheapest polarity pair misses the floor, a dearer one clears it
+        return {(False, False): (3.0, 1.0), (True, False): (4.0, 2.0)}.get((t.bass_inverted, t.hf_inverted),
+                                                                            (3.0, 5.0))
+    _fake_search(monkeypatch, fit_of)
+    res = search_passive(omni_ways(FIT_F), _resistive(), 2851.0, lf_hf_min=None)
+    assert (res.fit.topo.bass_inverted, res.fit.topo.hf_inverted) == (True, False)
+    assert res.fit.z_ok and res.series is None
+
+
+def test_the_pick_prefers_a_grid_point_that_clears_the_floor_and_then_needs_no_fallback(monkeypatch):
+    from speaker.passive import search_passive
+    calls = _fake_search(monkeypatch, lambda fb, t: (3.0, 1.0) if fb == 170.0 else (4.0, 2.0),
+                         lambda fit: {"whole_rear": 20.0} if fit.bass_coax == 170.0 else {},
+                         grid=((170.0, 210.0), (1600.0,)))
+    res = search_passive(omni_ways(FIT_F), _resistive(), 2851.0, lf_hf_min=None)
+    assert res.fit.bass_coax == 210.0 and res.fit.z_ok  # 170 Hz scores far better but misses 3.5 ohm
+    assert res.series is None and all(t.bass_wiring == "parallel" for t in calls)
+
+
+def test_the_fallback_note_says_no_network_in_the_search_clears_the_floor(monkeypatch):
+    from speaker.passive import search_passive
+    _fake_search(monkeypatch, lambda fb, t: (3.0, 1.0) if t.bass_wiring == "parallel" else (4.0, 1.0))
+    res = search_passive(omni_ways(FIT_F), _resistive(), 2851.0, lf_hf_min=None)
+    assert res.series is not None and res.series.fit.z_ok
+    assert any(n.startswith("No parallel-woofer network in the search clears 3.5 Ω") for n in res.notes)
+
+
+def test_an_option_that_lifts_the_network_over_the_floor_is_kept_whatever_flat23_does(monkeypatch):
+    from speaker.passive import search_passive
+    _fake_search(monkeypatch, lambda fb, t: (4.0, 1.0) if t.zobel else (3.0, 1.0),
+                 lambda fit: {"flat23": 1.5} if fit.topo.zobel else {})
+    res = search_passive(omni_ways(FIT_F), _resistive(), 2851.0, lf_hf_min=None)
+    assert res.fit.topo.zobel and res.fit.z_ok and res.series is None
+    assert any(n.startswith("Kept the Zobel") and "3.5 Ω" in n for n in res.notes)
