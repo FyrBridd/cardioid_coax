@@ -26,9 +26,9 @@ from .directivity_report import _CSS, _commit, _h, _jsonable, _params_sha, _row,
 from .evaluate import Design, _datasheet_fallback, ways_scores
 from .network import Part, solve
 from .passive import (
-    BOUNDS, OPTION_TEXT, STOP_DB, TOL_FLAT_DB, TOL_SPREAD, TOL_Z_MIN, Z_GRID, PassiveFit, PassiveResult, Topology,
-    bass_scale, build, driver_loads, passive_scores, passive_total, search_passive, stop_grid, stopbands, transfers,
-    woofer_level_db,
+    BOUNDS, ELEC_GAIN_MAX_DB, FIT_LO, OPTION_TEXT, PEAK_TOL_DB, STOP_DB, TOL_FLAT_DB, TOL_SPREAD, TOL_Z_MIN, Z_GRID,
+    PassiveFit, PassiveResult, Topology, bass_scale, build, driver_loads, largest_gain_db, low_rise_db, passive_scores,
+    passive_total, search_passive, stop_grid, stopbands, transfers, woofer_level_db,
 )
 from .schematic import LINK_TEXT, draw_links, draw_network, fmt_value, link_states, links_text, terminal_text
 from .scores import Score
@@ -226,6 +226,25 @@ def stopband_lines(fit: PassiveFit, d: Design) -> list[str]:
     return out
 
 
+def peak_line(fit: PassiveFit, d: Design, tl: float, ways: Ways | None = None) -> str:
+    """One sentence: the largest voltage gain any branch gives its driver (passive mode, nominal values, the driver
+    loads, Z_GRID) against ELEC_GAIN_MAX_DB, and, with ways, the largest rise of the smoothed 23° sum above the fitted
+    level below FIT_LO against PEAK_TOL_DB."""
+    t = fit.topo
+    h, _ = transfers(build(fit.values, t, "passive"), Z_GRID, _loads(fit, d, Z_GRID), t)
+    g, k, j = largest_gain_db(h)
+    out = (f"largest branch voltage gain: {g:+.1f} dB ({_BRANCH_TEXT[k]}) at {Z_GRID[j]:.0f} Hz (limit "
+           f"+{ELEC_GAIN_MAX_DB:g} dB){'' if g <= ELEC_GAIN_MAX_DB + 0.05 else ' OVER'}")
+    if ways is None:
+        return out
+    rise = low_rise_db(ways, fit, lambda x: impedances(d, x), tl)
+    if rise is None:
+        return out + f"; no response data below {FIT_LO:g} Hz"
+    r, at = rise
+    return (out + f"; largest rise of the 23° sum above the fitted level below {FIT_LO:g} Hz: {r:+.1f} dB at "
+                  f"{at:.0f} Hz (limit +{PEAK_TOL_DB:g} dB){'' if r <= PEAK_TOL_DB + 0.05 else ' OVER'}")
+
+
 def _draws(tol) -> int:
     return len(tol.draws_z_min) or P.TOL_DRAWS
 
@@ -297,9 +316,9 @@ def _links_lines(t: Topology) -> list[str]:
 
 
 def _network_block(res: PassiveResult, d: Design, title: str, *, semi: bool = True,
-                   sens: str | None = None) -> list[str]:
+                   sens: str | None = None, peak: str | None = None) -> list[str]:
     """One network's section of network.txt; semi False (the series alternative) replaces the semi-active netlist
-    with a pointer to the parallel network's boards. sens: the sensitivity sentence, when known."""
+    with a pointer to the parallel network's boards. sens: the sensitivity sentence, when known; peak: peak_line."""
     fit, tol, t = res.fit, res.tolerance, res.fit.topo
     v = d.p.drive.amp_v_rms
     loads = _loads(fit, d, Z_GRID)
@@ -319,6 +338,7 @@ def _network_block(res: PassiveResult, d: Design, title: str, *, semi: bool = Tr
         f"{Z_FLOOR:g} Ω) | flat23 {tol.flat23_nominal:.2f} dB (trusted, nominal values)",
         f"minimum impedance in the bass band ({BASS_BAND[0]:g}-{BASS_BAND[1]:g} Hz): {zbb:.2f} Ω at {zbf:.0f} Hz",
         *stopband_lines(fit, d),
+        *([peak] if peak else []),
         f"tolerance check ({_draws(tol)} draws, ±{TOL_SPREAD * 100:g} % on every L and C): "
         f"{'passed' if tol.passed else 'FAILED'}; worst draw {tol.z_min:.2f} Ω (limit {TOL_Z_MIN:g} Ω); flat23 "
         f"{tol.flat23_nominal:.2f} dB nominal, {tol.flat23_p95:.2f} dB at the 95th percentile (limit "
@@ -372,9 +392,10 @@ def _header(d: Design, tl: float, what: str) -> list[str]:
 def network_text(result: PassiveResult, d: Design, tl: float, *, ways: Ways | None = None,
                  active_total: np.ndarray | None = None) -> str:
     """The network sheet: per network (the chosen one, and the woofers-in-series alternative when attached), the
-    points, polarity, options, the floor used, the minimum impedance beside flat23, the tolerance result, the
-    sensitivity (with ways), any value at a search limit, the netlist of each mode with type, tolerance, DCR and
-    power, the links per mode and the search notes. active_total (with ways): the active crossover's total, whose
+    points, polarity, options, the floor used, the minimum impedance beside flat23, the stopbands, the largest branch
+    gain (and with ways the rise below FIT_LO), the tolerance result, the sensitivity (with ways), any value at a
+    search limit, the netlist of each mode with type, tolerance, DCR and power, the links per mode and the search
+    notes. active_total (with ways): the active crossover's total, whose
     sensitivity is given for comparison."""
     out = _header(d, tl, "Passive crossover network")
     sens = {}
@@ -387,10 +408,11 @@ def network_text(result: PassiveResult, d: Design, tl: float, *, ways: Ways | No
             out += [f"# active crossover, for comparison: {sensitivity_text(ways, active_total, Topology())}", ""]
     out += _network_block(result, d, "Chosen network" if result.series is None else
                           f"Network with the woofers in parallel (does not clear {Z_FLOOR:g} Ω)",
-                          sens=sens.get(result.fit.topo.bass_wiring))
+                          sens=sens.get(result.fit.topo.bass_wiring), peak=peak_line(result.fit, d, tl, ways))
     if result.series is not None:
         out += _network_block(result.series, d, "Alternative: the woofers in series", semi=False,
-                              sens=sens.get(result.series.fit.topo.bass_wiring))
+                              sens=sens.get(result.series.fit.topo.bass_wiring),
+                              peak=peak_line(result.series.fit, d, tl, ways))
     return "\n".join(out)
 
 
@@ -551,9 +573,9 @@ def _links_html(t: Topology) -> str:
             + "</ul>")
 
 
-def _summary(res: PassiveResult, d: Design, label: str, sens: str | None = None) -> str:
+def _summary(res: PassiveResult, d: Design, label: str, sens: str | None = None, peak: str | None = None) -> str:
     """One network's key facts as an HTML list: points, polarity, options, z_min beside flat23, tolerance, and the
-    sensitivity sentence when given."""
+    sensitivity sentence and peak_line when given."""
     e = html.escape
     fit, tol, t = res.fit, res.tolerance, res.fit.topo
     z, zf = _z_min(build(fit.values, t, "passive"), _loads(fit, d, Z_GRID), Z_GRID)
@@ -571,6 +593,7 @@ def _summary(res: PassiveResult, d: Design, label: str, sens: str | None = None)
         f'Part tolerance: <span class="{"pass" if tol.passed else "fail"}">'
         f"{'passed' if tol.passed else 'failed'}</span> (worst draw {tol.z_min:.2f} Ω; flat23 "
         f"{tol.flat23_p95:.2f} dB at the 95th percentile).",
+        *([e(peak[0].upper() + peak[1:] + ".")] if peak else []),
         *([e(sens)] if sens else []),
     ]
     items += [f'<span class="warn">{e(s)}</span>' for s in bound_notes(fit)]
@@ -646,6 +669,8 @@ def run_passive(params_path: Path | None, out_dir: Path, *, trusted_limit: tuple
             "active": sensitivity_text(ways, totals["active"], Topology())}
     if res.series is not None:
         sens["series"] = sensitivity_text(ways, passive_total(ways, res.series.fit, z), res.series.fit.topo)
+    peaks = {"passive": peak_line(fit, d, tl, ways),
+             **({"series": peak_line(res.series.fit, d, tl, ways)} if res.series is not None else {})}
 
     _log("passive: writing outputs")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -719,8 +744,8 @@ def run_passive(params_path: Path | None, out_dir: Path, *, trusted_limit: tuple
                            np.array(tol.draws_z_min), TOL_Z_MIN)
 
     zb = np.abs(loads["bass"])
-    page = _html(d, res=res, sa=sa, xo=xo, scores=scores, series_scores=series_scores, sens=sens, tl=tl,
-                 tl_text=tl_text,
+    page = _html(d, res=res, sa=sa, xo=xo, scores=scores, series_scores=series_scores, sens=sens, peaks=peaks,
+                 tl=tl, tl_text=tl_text,
                  schem=schem, bass_min=(float(zb.min()), float(Z_GRID[np.argmin(zb)])),
                  wall=time.perf_counter() - t0)
     path = out_dir / "report.html"
@@ -730,8 +755,8 @@ def run_passive(params_path: Path | None, out_dir: Path, *, trusted_limit: tuple
 
 
 def _html(d: Design, *, res: PassiveResult, sa, xo, scores: dict[str, list[Score]], sens: dict[str, str],
-          series_scores: list[Score] | None, tl: float, tl_text: str, schem: dict[str, tuple[str, str]],
-          bass_min: tuple[float, float], wall: float) -> str:
+          peaks: dict[str, str], series_scores: list[Score] | None, tl: float, tl_text: str,
+          schem: dict[str, tuple[str, str]], bass_min: tuple[float, float], wall: float) -> str:
     e = html.escape
     fit, t = res.fit, res.fit.topo
 
@@ -765,7 +790,7 @@ def _html(d: Design, *, res: PassiveResult, sa, xo, scores: dict[str, list[Score
             "network with the two woofers wired in series is given too. In series the pair is four times the "
             "impedance but 6 dB quieter, so the coax is padded down further and the speaker plays about 6 dB less "
             "loud. You choose.</p>"
-            + _summary(sr, d, "Series alternative", sens.get("series"))
+            + _summary(sr, d, "Series alternative", sens.get("series"), peaks.get("series"))
             + "<p>The semi-active results above use the parallel network's coax boards; the series alternative's "
               "coax boards differ (more padding).</p>"
             + (_score_table({"passive": series_scores, "active": scores["active"]}) if series_scores else "")
@@ -783,7 +808,7 @@ def _html(d: Design, *, res: PassiveResult, sa, xo, scores: dict[str, list[Score
         "can be compared directly.</p>",
         "<table class='meta'>" + "".join(_row([f"<td>{k}</td>", f"<td>{v}</td>"]) for k, v in head) + "</table>",
         "<h2>Summary</h2>",
-        _summary(res, d, "Passive network", sens["passive"]),
+        _summary(res, d, "Passive network", sens["passive"], peaks["passive"]),
         f"<p><b>Semi-active</b>: DSP split at {sa.bass_coax:g} Hz ahead of the same coax boards. "
         f"<b>Active</b> (for comparison): {xo.bass_coax:g} Hz and {xo.lf_hf:g} Hz. {e(sens['active'])}</p>",
         (f'<p class="warn">The woofers-in-parallel network does not clear {Z_FLOOR:g} Ω; see the series fallback '

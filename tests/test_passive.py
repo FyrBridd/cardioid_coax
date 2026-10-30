@@ -628,3 +628,87 @@ def test_a_failing_series_search_keeps_the_parallel_result_with_a_note(monkeypat
     assert res.series is None and res.fit.topo.bass_wiring == "parallel"
     assert any("woofers-in-series" in n and "failed" in n and "no passive crossover candidate" in n
                for n in res.notes)
+
+
+# ---- no bass peak below the fitted band (follow-up: the +4.7 dB resonance at 54 Hz)
+
+LOW_F = np.geomspace(40.0, 16000.0, 180)   # reaches under FIT_LO, as the BEM grid does
+
+
+def _sealed_bass(f, re=3.3, res=15.0, fc=35.0, qm=2.0, le=0.5e-3):
+    """The coax ways 8 ohm; the woofer pair a sealed-box driver: re + j w le plus its motional impedance (a parallel
+    RLC peaking at res ohm at fc). Above fc the pair looks capacitive, and the bass low-pass's series inductor
+    resonates with it under FIT_LO, as on the real woofers."""
+    w, w0 = 2 * np.pi * np.asarray(f, dtype=float), 2 * np.pi * fc
+    zm = 1 / (1 / res + 1 / (1j * w * res / (qm * w0)) + 1j * w * qm / (res * w0))
+    return {"coax_lf": np.full(len(w), 8.0 + 0j), "coax_hf": np.full(len(w), 8.0 + 0j),
+            "bass_pair": re + 1j * w * le + zm}
+
+
+def _max_gain_db(fit, z, branch="bass"):
+    t = fit.topo
+    h, _ = transfers(build(fit.values, t, "passive"), Z_GRID, driver_loads(z(Z_GRID), t), t)
+    return float(20 * np.log10(np.abs(h[branch])).max())
+
+
+def _low_rise_db(w, fit, z, tl=2851.0):
+    """The largest rise of the smoothed 23° sum above the fitted level below FIT_LO (independent of passive.py's)."""
+    from speaker.passive import FIT_LO, FIT_SMOOTH, _smoother
+    t = passive_total(w, fit, z)[:, w.obs.at23_idx]
+    db = 10 * np.log10(_smoother(w.f, FIT_SMOOTH) @ np.abs(t) ** 2)
+    return float(db[w.f < FIT_LO].max() - _fit_level(w, fit, z, tl))
+
+
+def test_electrical_gain_cap_penalises_a_resonant_branch(monkeypatch):
+    """1 mH with 390 µF into 3.3 ohm is a low-pass of Q ~2: about +5 dB near 240 Hz, which the cap penalises; the
+    Butterworth start values on the same load do not exceed 0 dB and cost nothing. A fit on that load stays under
+    the cap, and on a sealed woofer's impedance (which invites the resonance under FIT_LO, where the residual cannot
+    see it) the cap is what holds it there."""
+    import speaker.passive as P
+    from speaker.passive import ELEC_GAIN_MAX_DB, gain_excess_db
+    assert ELEC_GAIN_MAX_DB == 1.0
+    t, z = Topology(), _resistive(bass=3.3)
+    loads = driver_loads(z(Z_GRID), t)
+    v = _values(t) | {"L_b1": 1e-3, "C_b1": 390e-6}
+    h, _ = transfers(build(v, t, "passive"), Z_GRID, loads, t)
+    assert 20 * np.log10(np.abs(h["bass"])).max() > 3.0
+    ex = gain_excess_db(h)
+    assert len(ex) == 3 * len(Z_GRID) and ex.max() > 2.0 and np.all(ex >= 0)
+    calm = _values(t) | start_values(t, 170.0, 1200.0, loads)
+    hc, _ = transfers(build(calm, t, "passive"), Z_GRID, loads, t)
+    assert gain_excess_db({"bass": hc["bass"]}).max() == 0.0
+    w = omni_ways(LOW_F)
+    assert _max_gain_db(fit_passive_at(w, z, 2851.0, 170.0, 1200.0, t), z) <= ELEC_GAIN_MAX_DB + 0.2
+    weight = P.PEAK_WEIGHT
+    monkeypatch.setattr(P, "PEAK_TOL_DB", 100.0)   # the electrical cap alone
+    monkeypatch.setattr(P, "PEAK_WEIGHT", 0.0)
+    free = _max_gain_db(fit_passive_at(w, _sealed_bass, 2851.0, 170.0, 1200.0, t), _sealed_bass)
+    monkeypatch.setattr(P, "PEAK_WEIGHT", weight)
+    held = _max_gain_db(fit_passive_at(w, _sealed_bass, 2851.0, 170.0, 1200.0, t), _sealed_bass)
+    assert free > ELEC_GAIN_MAX_DB + 2.0 and held <= ELEC_GAIN_MAX_DB + 0.2
+
+
+def test_no_acoustic_peak_below_the_fitted_band(monkeypatch):
+    """On omni ways from 40 Hz with a sealed woofer's impedance, the fit without the guard lets the sum rise well over
+    its level under FIT_LO; with it the rise stays within PEAK_TOL_DB. A sum that rolls off under FIT_LO costs
+    nothing: the fit is the same with the guard as without it."""
+    import speaker.passive as P
+    from speaker.passive import PEAK_TOL_DB
+    assert PEAK_TOL_DB == 1.0
+    t, w = Topology(), omni_ways(LOW_F)
+    monkeypatch.setattr(P, "ELEC_GAIN_MAX_DB", 100.0)   # the acoustic guard alone
+    monkeypatch.setattr(P, "PEAK_TOL_DB", 100.0)
+    free = _low_rise_db(w, fit_passive_at(w, _sealed_bass, 2851.0, 170.0, 1200.0, t), _sealed_bass)
+    monkeypatch.setattr(P, "PEAK_TOL_DB", 1.0)
+    held = _low_rise_db(w, fit_passive_at(w, _sealed_bass, 2851.0, 170.0, 1200.0, t), _sealed_bass)
+    assert free > PEAK_TOL_DB + 3.0 and held <= PEAK_TOL_DB + 0.2
+    # the woofers roll off steeply under 100 Hz (4th order at 100 Hz) on a resistive load: nothing to penalise
+    s = 1j * LOW_F / 100.0
+    rolled = omni_ways(LOW_F)
+    rolled.ways["bass"] *= ((s ** 2 / (s ** 2 + s / 0.707 + 1)) ** 2)[:, None]
+    z = _resistive(bass=4.0)
+    held = fit_passive_at(rolled, z, 2851.0, 170.0, 1200.0, t)
+    assert _low_rise_db(rolled, held, z) < 0.0
+    monkeypatch.setattr(P, "PEAK_TOL_DB", 100.0)
+    free = fit_passive_at(rolled, z, 2851.0, 170.0, 1200.0, t)
+    assert held.values == free.values and held.cost == pytest.approx(free.cost)

@@ -199,7 +199,7 @@ def test_run_passive_writes_every_output(tmp_path, monkeypatch):
     for s in ("Where passive falls short of active", "Tolerance", "bare woofer", "schematic_bass.svg",
               "links.svg", "plots/impedance.png", "plots/whole_rear_compare.png", "semi_active.txt",
               "Passive", "Semi-active", "Active", "8.00 Ω", "Passive behind active", "dB at 2 m for 2.83 V",
-              "plots/electrical.png", "minimum is"):
+              "plots/electrical.png", "minimum is", "Largest branch voltage gain", "below 100 Hz"):
         assert s in page, s
     assert "series" not in (tmp_path / "parts.csv").read_text().split("\n", 1)[1]
 
@@ -292,3 +292,28 @@ def test_network_sheet_gives_the_bass_band_minimum_impedance_and_the_stopbands(m
     assert "minimum impedance in the bass band (20-500 Hz):" in text
     lines = [x for x in text.splitlines() if x.startswith("electrical stopband")]
     assert len(lines) == len(stopbands(200.0, 1600.0)) and all(f"limit {STOP_DB:g} dB" in x for x in lines)
+
+
+def test_network_sheet_and_report_give_the_largest_branch_gain_and_the_rise_below_the_fitted_band(monkeypatch):
+    import speaker.passive_report as pr
+    from speaker.evaluate import load_design
+    from speaker.passive import ELEC_GAIN_MAX_DB, FIT_LO, PEAK_TOL_DB, Z_GRID, low_rise_db, transfers
+    monkeypatch.setattr(pr, "impedances", lambda d, f: _resistive(f, bass=3.3))
+    d = load_design(None)
+    res = _result(series=_result(Topology(bass_wiring="series")), L_b1=1e-3, C_b1=390e-6)   # a resonant bass
+    w = omni_ways(np.geomspace(40.0, 16000.0, 150))
+    text = pr.network_text(res, d, TL, ways=w)
+    lines = [x for x in text.splitlines() if x.startswith("largest branch voltage gain")]
+    assert len(lines) == 2   # parallel and series
+    t = res.fit.topo
+    h, _ = transfers(build(res.fit.values, t, "passive"), Z_GRID, pr.driver_loads(_resistive(Z_GRID, 3.3), t), t)
+    db = 20 * np.log10(np.abs(h["bass"]))
+    assert f"{db.max():+.1f} dB (bass) at {Z_GRID[np.argmax(db)]:.0f} Hz" in lines[0]
+    assert f"limit +{ELEC_GAIN_MAX_DB:g} dB" in lines[0] and "OVER" in lines[0]
+    rise, at = low_rise_db(w, res.fit, lambda f: _resistive(f, 3.3), TL)
+    assert f"below {FIT_LO:g} Hz: {rise:+.1f} dB at {at:.0f} Hz (limit +{PEAK_TOL_DB:g} dB)" in lines[0]
+    # without the ways the sheet still gives the gain
+    bare = [x for x in pr.network_text(res, d, TL).splitlines() if x.startswith("largest branch voltage gain")]
+    assert len(bare) == 2 and "below" not in bare[0]
+    page = pr._summary(res, d, "Passive network", peak=lines[0])
+    assert "Largest branch voltage gain" in page and "below 100 Hz" in page

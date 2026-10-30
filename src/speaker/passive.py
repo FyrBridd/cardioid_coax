@@ -179,6 +179,15 @@ STOP_RATIO = 4.0  # the far stopband starts this factor beyond the crossover poi
 # 2026-10-30) weights 3 and 10 left the bass 0.7 and 1.8 dB over the rule near 4 fb; 15, 20, 30, 50 and 100 held it
 # within 0.3 dB. 20 is one step above the lowest that held, so a small change in the driver data does not tip it over.
 STOP_WEIGHT = 20.0
+ELEC_GAIN_MAX_DB = 1.0  # dB, the most voltage gain a branch may give its driver on Z_GRID (only a resonance gains)
+PEAK_TOL_DB = 1.0  # dB, how far the smoothed 23° sum may sit above the fitted level below FIT_LO (a roll-off is free)
+# residual per dB over ELEC_GAIN_MAX_DB at each Z_GRID point of each branch, and per dB over PEAK_TOL_DB at each point
+# below FIT_LO. On round 3's bass260-580 (whole search, 2026-10-30) no weight met the cap: the woofers look capacitive
+# above their ~40 Hz resonance, and with the 3.5 ohm floor the bass low-pass gains at least ~+1.1 dB near 60 Hz.
+# Weights 20-300 left it +2.0 to +3.6 dB (flat23 3.3-7.3 dB); 500-10000 gave +1.1 to +1.7 dB, the sum under its level
+# below 100 Hz, but the bass 6-18 dB over its STOP_DB line (every weight checked, 50-10000). 1000 gave the best flat23
+# (1.42 dB; +1.4 dB, stopband 6.3 dB over). The outcome moves a lot with the weight: 500 gave 6.06 dB, 2000 1.99 dB.
+PEAK_WEIGHT = 1000.0
 _EDGE = 1e-6  # keeps start values strictly inside the bounds (log scale)
 _LSQ_TOL = 1e-4  # least_squares ftol and xtol: finer log-value steps are lost in the ~20 % snap to standard values
 
@@ -214,6 +223,43 @@ def stop_excess_db(h: dict[str, np.ndarray], fb: float, fh: float, mode: Mode = 
         db = 20 * np.log10(np.maximum(a[:n][m], 1e-300) / max(float(a[ref[fc]]), 1e-300))
         out.append(np.maximum(0.0, db - STOP_DB))
     return np.concatenate(out)
+
+
+def gain_excess_db(h: dict[str, np.ndarray]) -> np.ndarray:
+    """dB by which each branch's |H| (h: transfers on Z_GRID) sits over ELEC_GAIN_MAX_DB, branch by branch in h's
+    order (0 where under). A passive network gives a driver more than its input voltage only by resonating, so this
+    holds whatever the acoustic data say (the fitted band starts at FIT_LO, and the bass is zero above tl)."""
+    return np.concatenate([np.maximum(0.0, 20 * np.log10(np.maximum(np.abs(x), 1e-300)) - ELEC_GAIN_MAX_DB)
+                           for x in h.values()])
+
+
+def largest_gain_db(h: dict[str, np.ndarray]) -> tuple[float, str, int]:
+    """The largest |H| in dB over every branch of h (transfers on any grid), which branch, and at which index."""
+    db = {k: 20 * np.log10(np.maximum(np.abs(x), 1e-300)) for k, x in h.items()}
+    k = max(db, key=lambda n: float(db[n].max()))
+    j = int(np.argmax(db[k]))
+    return float(db[k][j]), k, j
+
+
+def _fit_band(f: np.ndarray, tl: float) -> np.ndarray:
+    """The residual's point weights: 1 on [FIT_LO, tl], ABOVE_WEIGHT on (tl, FIT_TOP], 0 elsewhere."""
+    return np.where((f >= FIT_LO) & (f <= tl), 1.0, np.where((f > tl) & (f <= FIT_TOP), ABOVE_WEIGHT, 0.0))
+
+
+def _fit_level(p: np.ndarray, ps: np.ndarray, band: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
+    """The residual's weights (band, 0 where the sum's power p or its smoothed power ps is exactly 0), the smoothed dB
+    (0 where weightless) and their weighted mean: the level fit_passive_at fits to."""
+    w = np.where((p > 0) & (ps > 0), band, 0.0)
+    db = 10 * np.log10(np.where(w > 0, ps, 1.0))
+    return w, db, float(np.sum(w * db) / max(np.sum(w), 1e-30))
+
+
+def _low_rise(f: np.ndarray, p: np.ndarray, ps: np.ndarray, level: float) -> np.ndarray:
+    """dB the smoothed sum (power ps; p unsmoothed) sits above level at each point of f under FIT_LO; -inf where the
+    sum is exactly zero (skipped)."""
+    lo = f < FIT_LO
+    ok = (p[lo] > 0) & (ps[lo] > 0)
+    return np.where(ok, 10 * np.log10(np.where(ok, ps[lo], 1.0)) - level, -np.inf)
 
 
 @dataclass(frozen=True)
@@ -326,6 +372,20 @@ def woofer_level_db(ways: Ways, topo: Topology) -> float | None:
     return _woofer_level(f, bass_scale(topo) * ways.ways["bass"][:, ways.obs.at23_idx], _smoother(f, FIT_SMOOTH))
 
 
+def low_rise_db(ways: Ways, fit: PassiveFit, z: Callable[[np.ndarray], dict[str, np.ndarray]],
+                tl: float) -> tuple[float, float] | None:
+    """The largest rise (dB) of the FIT_SMOOTH-smoothed 23° sum (passive mode) above the level fit_passive_at fits,
+    over the points of ways.f under FIT_LO, and where (Hz); None when no such point has a non-zero sum."""
+    f = np.asarray(ways.f, dtype=float)
+    p = np.abs(passive_total(ways, fit, z)[:, ways.obs.at23_idx]) ** 2
+    ps = _smoother(f, FIT_SMOOTH) @ p
+    rise = _low_rise(f, p, ps, _fit_level(p, ps, _fit_band(f, tl))[2])
+    if not np.isfinite(rise).any():
+        return None
+    j = int(np.argmax(rise))
+    return float(rise[j]), float(f[f < FIT_LO][j])
+
+
 def fit_passive_at(ways: Ways, z: Callable[[np.ndarray], dict[str, np.ndarray]], tl: float, fb: float, fh: float,
                    topo: Topology, z_floor: float = 3.5) -> PassiveFit:
     """The passive network's values (passive mode, topo's options and polarity) at crossover points fb, fh.
@@ -344,8 +404,12 @@ def fit_passive_at(ways: Ways, z: Callable[[np.ndarray], dict[str, np.ndarray]],
     at each Z_GRID point; STOP_WEIGHT per dB that a branch's |H| (the network on the driver loads, electrical, not
     acoustic) sits over STOP_DB re its |H| at the crossover point, at each Z_GRID point of its far stopbands
     (stopbands, stop_excess_db), which keeps a branch from resonating where the acoustic data cannot see it (the
-    bass is zero above tl, and the smoothing hides narrow peaks); and, with the RLC shunt, Q_PENALTY per unit of its
-    Q over SHUNT_Q_MAX.
+    bass is zero above tl, and the smoothing hides narrow peaks); PEAK_WEIGHT per dB that any branch's |H| sits over
+    ELEC_GAIN_MAX_DB at each Z_GRID point (gain_excess_db: a passive network only gains by resonating), and PEAK_WEIGHT
+    per dB that the smoothed 23° sum sits more than PEAK_TOL_DB over the level at each point of ways.f under FIT_LO
+    (one-sided: a roll-off there costs nothing; points where the sum is exactly zero skipped), which together keep a
+    resonance out of the band under FIT_LO that the residual does not see (the sealed woofers roll off there by
+    design, so the band is not lowered); and, with the RLC shunt, Q_PENALTY per unit of its Q over SHUNT_Q_MAX.
 
     The log values are fitted inside BOUNDS by least squares from start_values (L-pads from the level
     difference), then snapped. Coordinate-descent passes then try each value's two standard neighbours (inside
@@ -361,7 +425,7 @@ def fit_passive_at(ways: Ways, z: Callable[[np.ndarray], dict[str, np.ndarray]],
     loads = {k: np.concatenate([zf[k], zg[k], zs[k]]) for k in zf}
     resp = {k: ways.ways[k][:, i] * (bass_scale(topo) if k == "bass" else 1.0)
             for k in ("bass", "coax_lf", "coax_hf")}
-    band = np.where((f >= FIT_LO) & (f <= tl), 1.0, np.where((f > tl) & (f <= FIT_TOP), ABOVE_WEIGHT, 0.0))
+    band = _fit_band(f, tl)
     if not band.any():
         raise ValueError(f"no frequencies between {FIT_LO:g} and {max(tl, FIT_TOP):g} Hz to fit on")
     sm = _smoother(f, FIT_SMOOTH)
@@ -380,9 +444,7 @@ def fit_passive_at(ways: Ways, z: Callable[[np.ndarray], dict[str, np.ndarray]],
         each = {k: h[k][:nf] * resp[k] for k in h}
         p = np.abs(sum(each.values())) ** 2
         ps = sm @ p
-        w = np.where((p > 0) & (ps > 0), band, 0.0)
-        db = 10 * np.log10(np.where(w > 0, ps, 1.0))
-        level = np.sum(w * db) / max(np.sum(w), 1e-30)
+        w, db, level = _fit_level(p, ps, band)
         r = w * (db - level)
         # no level term when the woofers have no level to anchor to (no points in their band, or exactly zero)
         lv = [] if target is None else [LEVEL_WEIGHT * max(0.0, target - LEVEL_SLACK_DB - level)]
@@ -398,7 +460,9 @@ def fit_passive_at(ways: Ways, z: Callable[[np.ndarray], dict[str, np.ndarray]],
                 xr[n] = CROSS_WEIGHT * ((1 - t) * d[0] + t * d[1])
         zm = np.abs(z_in[nf:nf + len(Z_GRID)])
         pen = [Z_PENALTY * np.maximum(0.0, z_floor - zm),
-               STOP_WEIGHT * stop_excess_db({k: x[nf:] for k, x in h.items()}, fb, fh)]
+               STOP_WEIGHT * stop_excess_db({k: x[nf:] for k, x in h.items()}, fb, fh),
+               PEAK_WEIGHT * gain_excess_db({k: x[nf:nf + len(Z_GRID)] for k, x in h.items()}),
+               PEAK_WEIGHT * np.maximum(0.0, _low_rise(f, p, ps, level) - PEAK_TOL_DB)]
         if topo.hf_shunt:
             pen.append([Q_PENALTY * max(0.0, np.sqrt(v["L_tr"] / v["C_tr"]) / v["R_tr"] - SHUNT_Q_MAX)])
         return np.concatenate([r, xr, lv, bu, *pen]), float(zm.min())
