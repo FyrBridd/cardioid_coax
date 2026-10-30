@@ -52,13 +52,21 @@ def test_rank_gate_unmet_ties_on_hard_go_to_the_key():
     assert r.gate_unmet and r.order == ["b", "a"]
 
 
-def test_rank_bucket_ties_go_to_di_smoothness():
-    # window+presence 4.05 vs 4.20 (same 0.25 dB bucket); the lower DI sum wins
+def test_rank_tier_is_within_a_quarter_db_of_its_best():
+    # window+presence 3.90 is the best; 4.05 is within 0.25 dB of it, so the DI sum decides between them.
+    # 4.20 is not: it starts the next tier, with 4.40, and they are ordered on DI in turn.
     a = res("a", ws=2.0, pl=2.05, dib=1.5, dil=1.5)
     b = res("b", ws=2.0, pl=2.20, dib=1.0, dil=1.0)
-    c = res("c", ws=2.0, pl=1.90, dib=5.0, dil=5.0)  # 3.90: a lower bucket beats any DI sum
-    r = rank([a, b, c], "directivity")
-    assert r.order == ["c", "b", "a"]
+    c = res("c", ws=2.0, pl=1.90, dib=5.0, dil=5.0)
+    d = res("d", ws=2.0, pl=2.40, dib=0.5, dil=0.5)
+    assert rank([a, b, c, d], "directivity").order == ["a", "c", "d", "b"]
+
+
+def test_rank_near_ties_either_side_of_a_quarter_db_multiple_share_a_tier():
+    # 7.24 and 7.26 dB straddle 7.25, where the old fixed buckets split; 0.02 dB apart, DI decides
+    a = res("a", ws=3.0, pl=4.24, dib=2.0, dil=2.0)
+    b = res("b", ws=3.0, pl=4.26, dib=1.0, dil=1.0)
+    assert rank([a, b], "directivity").order == ["b", "a"]
 
 
 def test_rank_flat23_breaks_the_last_tie():

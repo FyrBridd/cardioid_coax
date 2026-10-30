@@ -72,15 +72,42 @@ def test_flat_omni_ways_need_no_eq():
     assert all(x.peq == () for x in xo.ways.values())
 
 
+def test_search_keys_include_the_whole_system_rear_rejection():
+    from speaker.xo_fit import SEARCH_KEYS
+    assert "whole_rear" in SEARCH_KEYS
+
+
 def test_search_stays_in_the_spec_ranges_and_returns_a_grid_point():
     xo = fit_active(omni_ways(), 2851.0)
     assert xo.bass_coax in BASS_COAX_GRID and xo.lf_hf in LF_HF_GRID
 
 
-def test_directivity_key_is_public():
-    from speaker.ranking import directivity_key
+def test_directivity_order_is_public():
+    from speaker.ranking import directivity_order
     v = dict(window_spread=1.0, presence_lift=1.0, di_smooth_bass=0.5, di_smooth_lfhf=0.5, flat23=2.0)
-    assert directivity_key(v) == (8, 1.0, 2.0)
+    rows = [("x", v | {"presence_lift": 1.2}), ("y", v)]
+    assert directivity_order(rows, lambda r: r[1]) == [rows[1], rows[0]]
+
+
+def test_search_floor_keeps_lf_hf_at_or_above_the_driver_recommendation():
+    assert _fitted(TL, "").lf_hf == 1600.0  # unfloored
+    assert fit_active(featured_ways(TL), TL, lf_hf_min=1800.0).lf_hf >= 1800.0
+    with pytest.raises(ValueError, match="2500 Hz"):
+        fit_active(omni_ways(), TL, lf_hf_min=2500.0)
+
+
+def _cand(name, rear, ws):
+    return name, dict(window_spread=ws, presence_lift=1.0, di_smooth_bass=0.5, di_smooth_lfhf=0.5, flat23=1.0,
+                      whole_rear=rear)
+
+
+def test_pick_keeps_candidates_within_a_db_of_the_best_rear_rejection():
+    from speaker.xo_fit import WHOLE_REAR_TOL_DB, pick
+    assert WHOLE_REAR_TOL_DB == 1.0
+    # a has the best directivity but 4.2 dB of rear rejection, 5.7 dB below b; c is within 1 dB of b
+    # and beats it on directivity
+    cands = [_cand("a", 4.2, 0.5), _cand("b", 9.9, 2.0), _cand("c", 9.0, 1.5), _cand("d", 8.8, 1.0)]
+    assert pick(cands) == "c"
 
 
 def test_passive_warnings():
@@ -126,19 +153,19 @@ def _fitted(f_top: float, above: str):
 
 
 def test_a_fit_on_data_that_stop_at_the_trusted_limit_is_unchanged():
-    # pinned from the fit before the search was clipped to the trusted limit: the screen grid stops
-    # there, so screen results must not change
+    # pinned from the scoring version 3 search (fixed DI bands, bass from 120 Hz, whole_rear kept, tiers within 0.25 dB);
+    # the screen grid stops at the trusted limit, so this is the fit every screen gets
     xo = _fitted(TL, "")
-    assert (xo.bass_coax, xo.lf_hf, xo.fit_top) == (250.0, 1800.0, pytest.approx(TL))
+    assert (xo.bass_coax, xo.lf_hf, xo.fit_top) == (170.0, 1600.0, pytest.approx(TL))
     want = {
-        "bass": (-7.405096501533659, 0.2e-3, 1, [(124.4160982844025, -2.423618616086809, 3.6110453171097188),
-                                                 (331.07693894651084, 2.777309215003459, 0.5)]),
-        "coax_lf": (0.0, 0.0, 1, [(554.058488987446, 2.7015329355880446, 0.5),
-                                  (593.7243995726011, -4.172341730219607, 1.4220238711325843),
-                                  (1804.5038698839883, 4.2198553873914335, 2.4939192570719233),
-                                  (2850.9999999999973, 0.8912351200591825, 1.9207189798120607)]),
-        "coax_hf": (10.961149650479925, 0.22e-3, -1, [(2281.533277539679, 6.873517022943925, 1.939449588960508),
-                                                      (2310.0236664730005, -6.083845883033322, 1.0002286299384393)]),
+        "bass": (-7.405096501533659, 0.15e-3, 1, [(120.54775165837202, -12.988997629249576, 0.8843117411617827),
+                                                  (120.64398094464696, 11.999999999999998, 0.5000000000000001)]),
+        "coax_lf": (0.0, 0.0, 1, [(226.54738993865544, 1.3398126562815094, 0.5000000000000001),
+                                  (590.1342936661375, -2.3503634702712537, 2.539103005796063),
+                                  (1813.2805195654096, 4.647246916340044, 1.6366165514562367)]),
+        "coax_hf": (10.961149650479925, 0.01e-3, 1, [(1600.0000000000014, -2.3315138960690103, 2.5216065096168148),
+                                                     (2271.1659110319065, 1.58066905241805, 3.1611612583276827),
+                                                     (2809.3328203508295, -1.511420260168743, 5.168117698023399)]),
     }
     for k, (g, d, pol, eq) in want.items():
         wf = xo.ways[k]

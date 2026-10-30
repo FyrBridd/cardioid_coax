@@ -14,7 +14,6 @@ from typing import Callable, Literal
 import numpy as np
 
 from speaker.bem.run import Observation
-from speaker.crossover import ActiveCrossover, FixedCrossover
 from speaker.curves import smooth
 from speaker.spinorama import P_REF_PEAK, Spin
 
@@ -23,6 +22,9 @@ FULL = (150.0, 16000.0)
 LW_RING = (0, 5, 10, 15, 20, 25, 30)  # H angles of the presence-lift LW curves
 ROLL_ANGLES = (40, 50, 60, 70, 80, 90)
 REAR_H = (*range(120, 180, 5), *range(-120, -185, -5))  # ring angles; 180 is the -180 entry
+# Hz, fc/2 to 2fc of every point speaker.xo_fit searches (150-250 Hz, 1-2 kHz): one band for every crossover.
+# The bass band starts at 120 Hz, not 75, where the screen grid starts, so screens and finals score alike.
+DI_BANDS = {"di_smooth_bass": (120.0, 500.0), "di_smooth_lfhf": (500.0, 4000.0)}
 
 
 @dataclass
@@ -115,17 +117,14 @@ def _presence_lift(c: _Ctx, m):
     return worst, "warn" if worst > 0.5 else "pass", {}
 
 
-def _di_smooth(fc: float):
-    def run(c: _Ctx, m):
-        m = m & (c.f >= fc / 2) & (c.f <= 2 * fc)
-        if m.sum() < 3:
-            return None
-        x, res = np.log10(c.f[m]), {}
-        for name, di in (("spdi", c.spin.spdi), ("erdi", c.spin.erdi)):
-            fit = np.polyval(np.polyfit(x, di[m], 1), x)
-            res[name] = float(np.abs(di[m] - fit).max())
-        return max(res.values()), "info", res
-    return run
+def _di_smooth(c: _Ctx, m):
+    if m.sum() < 3:
+        return None
+    x, res = np.log10(c.f[m]), {}
+    for name, di in (("spdi", c.spin.spdi), ("erdi", c.spin.erdi)):
+        fit = np.polyval(np.polyfit(x, di[m], 1), x)
+        res[name] = float(np.abs(di[m] - fit).max())
+    return max(res.values()), "info", res
 
 
 def _rolloff(c: _Ctx, m):
@@ -167,7 +166,7 @@ def _puck_weight(f: np.ndarray, blend: tuple[float, float] | None) -> np.ndarray
     return np.clip(np.log(f / lo) / np.log(hi / lo), 0.0, 1.0)
 
 
-# key, label, formula text, band (or a function of xo), computation
+# key, label, band, computation, formula text
 _SPECS = [
     ("flat23", "23° H flatness", FULL, _flat23,
      "The 23° H response (the exact listener direction) in 1/3-octave band levels (power mean of the grid points "
@@ -179,12 +178,14 @@ _SPECS = [
     ("presence_lift", "Presence lift 2-5 kHz", (2000.0, 5000.0), _presence_lift,
      "Over the LW curves (H 0-30 step 5 plus the two az 23 el +/-10 directions), each 1/6-octave smoothed: value = max "
      "over f in 2-5 kHz of max(c(f) - mean of c23 over the grid points in 2-5 kHz within this confidence part, c(f) - mean over 1-2 kHz of c). Warn if > 0.5 dB, else pass."),
-    ("di_smooth_bass", "DI smoothness at bass-coax crossover", None, None,
-     "For SPDI and ERDI over [fc/2, 2fc] with fc the bass-coax crossover: the max |residual| from a least-squares "
-     "line in log f. Value = the worse of the two. Info."),
-    ("di_smooth_lfhf", "DI smoothness at LF-HF crossover", None, None,
-     "For SPDI and ERDI over [fc/2, 2fc] with fc the LF-HF crossover: the max |residual| from a least-squares "
-     "line in log f. Value = the worse of the two. Info."),
+    ("di_smooth_bass", "DI smoothness at bass-coax crossover", DI_BANDS["di_smooth_bass"], _di_smooth,
+     "For SPDI and ERDI over 120-500 Hz (up to 2fc of every bass-coax point the crossover search tries, from "
+     "where the screen grid starts; the same band whatever the crossover): the max |residual| from a least-squares line in log f. Value = the worse of "
+     "the two. Info."),
+    ("di_smooth_lfhf", "DI smoothness at LF-HF crossover", DI_BANDS["di_smooth_lfhf"], _di_smooth,
+     "For SPDI and ERDI over 500 Hz-4 kHz (fc/2 to 2fc of every coax LF-HF point the crossover search tries, the "
+     "same band whatever the crossover): the max |residual| from a least-squares line in log f. Value = the worse "
+     "of the two. Info."),
     ("rolloff_monotonic", "Off-axis rolloff monotonic", FULL, _rolloff,
      "For each 1/3-octave band (power mean of the grid points) over 150 Hz-16 kHz, on the H +40...+90 side and the "
      "H -40...-90 side separately: the band counts once if on either side any step to the next larger |angle| "
@@ -209,7 +210,7 @@ _SPECS = [
 
 
 def score_all(f, total, coax_sec, obs: Observation, spin: Spin, *, trusted_limit: float,
-              xo: FixedCrossover | ActiveCrossover, puck_blend: tuple[float, float] | None = None,
+              puck_blend: tuple[float, float] | None = None,
               coax_far: np.ndarray | None = None) -> list[Score]:
     """Every §4 score, one per key per confidence part wide enough (>= 1/3 octave).
 
@@ -222,9 +223,6 @@ def score_all(f, total, coax_sec, obs: Observation, spin: Spin, *, trusted_limit
     w = _puck_weight(f, puck_blend)
     out: list[Score] = []
     for key, label, band, run, formula in _SPECS:
-        if key.startswith("di_smooth"):
-            fc = xo.bass_coax if key == "di_smooth_bass" else xo.lf_hf
-            band, run = (fc / 2, 2 * fc), _di_smooth(fc)
         lo, hi = max(band[0], f[0]), min(band[1], f[-1])
         parts = (("trusted", lo, min(hi, trusted_limit)), ("low", max(lo, trusted_limit), hi))
         for conf, plo, phi in parts:

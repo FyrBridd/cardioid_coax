@@ -203,7 +203,7 @@ def test_score_table_has_round0_rescored_and_flags_compare_entries(tmp_path):
     rescored = "Round 0 rescored (this code, screen settings, untuned)"
     compare = "Round 0 final (scored with earlier code; not like-for-like)"
     table = html[html.index(">Scores<"):html.index('<table class="grey">')]
-    assert table.index("runner-up 2") < table.index(rescored) < table.index(compare)
+    assert table.index("2. stage-base (runner-up; screen rank 2)") < table.index(rescored) < table.index(compare)
 
 
 def test_score_table_omits_round0_rescored_when_not_ok(tmp_path):
@@ -288,8 +288,34 @@ def test_errored_first_final_is_listed_and_rank_is_real(round_dir):
     finals[0].update(status="error", reason="Traceback\nRuntimeError: out of <memory>")
     put(round_dir / "finals.json", finals)
     html = html_of(round_dir)
-    assert "<b>stage-base</b> (rank 2)" in html
+    assert "<b>stage-base</b> (screen rank 2;" in html
     assert "Final 1, best, did not complete (error): RuntimeError: out of &lt;memory&gt;" in html
+
+
+def test_finals_are_ranked_on_their_own_scores(round_dir):
+    # best is screen rank 1, but its own final scores are worse than stage-base's (window spread 0.9 vs 0.6)
+    put(round_dir / "finals" / "best" / "scores.json", scores(spread=0.9))
+    html = html_of(round_dir)
+    assert "<b>stage-base</b> (screen rank 2; the best final on its own scores)" in html
+    table = html[html.index(">Scores<"):]
+    assert table.index("1. stage-base (recommendation; screen rank 2)") < table.index(
+        "2. best (runner-up; screen rank 1)")
+
+
+def test_a_final_without_its_own_scores_ranks_last_and_is_tagged_out(round_dir):
+    # no finals/best/scores.json: the screen scores must not stand in for it
+    (round_dir / "finals" / "best" / "scores.json").unlink()
+    html = html_of(round_dir)
+    assert "<b>stage-base</b> (screen rank 2; the best final on its own scores)" in html
+    assert "2. best (out: missing trusted score cardioid_hard; screen rank 1)" in html
+
+
+def test_no_final_scores_means_no_claim_about_them(round_dir):
+    for name in ("best", "stage-base"):
+        (round_dir / "finals" / name / "scores.json").unlink()
+    html = html_of(round_dir)
+    assert "<b>best</b> (screen rank 1), against" in html
+    assert "the best final on its own scores" not in html
 
 
 def test_base_label_names_the_reference_design(tmp_path):
