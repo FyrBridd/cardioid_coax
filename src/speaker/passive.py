@@ -184,9 +184,10 @@ PEAK_TOL_DB = 1.0  # dB, how far the smoothed 23° sum may sit above the fitted 
 # residual per dB over ELEC_GAIN_MAX_DB at each Z_GRID point of each branch, and per dB over PEAK_TOL_DB at each point
 # below FIT_LO. On round 3's bass260-580 (whole search, 2026-10-30) no weight met the cap: the woofers look capacitive
 # above their ~40 Hz resonance, and with the 3.5 ohm floor the bass low-pass gains at least ~+1.1 dB near 60 Hz.
-# Weights 20-300 left it +2.0 to +3.6 dB (flat23 3.3-7.3 dB); 500-10000 gave +1.1 to +1.7 dB, the sum under its level
-# below 100 Hz, but the bass 6-18 dB over its STOP_DB line (every weight checked, 50-10000). 1000 gave the best flat23
-# (1.42 dB; +1.4 dB, stopband 6.3 dB over). The outcome moves a lot with the weight: 500 gave 6.06 dB, 2000 1.99 dB.
+# Weights 20-300 left it +2.0 to +3.6 dB (flat23 3.3-7.3 dB); 500-10000 gave +1.1 to +1.7 dB, the sum within 1 dB
+# of its level below 100 Hz, but the bass 6-18 dB over its STOP_DB line (every weight checked, 50-10000). 1000 gave
+# the best flat23 (1.42 dB; +1.4 dB, stopband 6.3 dB over). The outcome moves a lot with the weight: 500 gave flat23
+# 6.06 dB, 2000 1.99 dB.
 PEAK_WEIGHT = 1000.0
 _EDGE = 1e-6  # keeps start values strictly inside the bounds (log scale)
 _LSQ_TOL = 1e-4  # least_squares ftol and xtol: finer log-value steps are lost in the ~20 % snap to standard values
