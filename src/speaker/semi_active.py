@@ -1,7 +1,8 @@
 """Semi-active mode: a DSP in front of the passive coax boards. The coax LF and HF run through the passive
 coax network (the same boards as passive mode, with the coax high-pass bypassed by links) from one amp channel;
 the bass runs bare from another. The DSP does the bass-to-coax crossover: an LR4 split at one point, the bass
-gain, delay, polarity and up to N_PEQ["bass"] PEQs, and the coax gain and delay (its EQ is in the network).
+gain, delay, polarity and up to N_PEQ["bass"] PEQs, and the coax gain, delay and up to N_PEQ_COAX PEQs (the
+passive network shapes the coax too, but cannot fill the cardioid chamber's low-end droop).
 
 e^{+jωt} convention, as speaker.crossover.
 """
@@ -23,13 +24,14 @@ from speaker.xo_fit import (
 )
 
 CHANNELS = ("bass", "coax")
+N_PEQ_COAX = N_PEQ["coax_lf"]  # coax channel PEQs, as many as the active fit gives the coax LF
 
 
 @dataclass(frozen=True)
 class SemiActive:
     bass_coax: float  # Hz
     bass: WayFilter  # gain, delay, polarity, up to N_PEQ["bass"] PEQs
-    coax: WayFilter  # gain and delay, polarity +1, no PEQ
+    coax: WayFilter  # gain, delay, polarity +1, up to N_PEQ_COAX PEQs
 
 
 def semi_ways(ways: Ways, z: Callable[[np.ndarray], dict[str, np.ndarray]], fit: PassiveFit) -> Ways:
@@ -64,8 +66,8 @@ def _level(p: np.ndarray, f: np.ndarray, band: tuple[float, float]) -> float | N
 
 def _fit_at(sw: Ways, tl: float, fb: float, fallback_db: float | None) -> SemiActive:
     """The DSP stage at bass-to-coax point fb from the data at or below tl only: coax at 0 dB, the bass gain
-    matching it over MATCH_BANDS["bass"] (fallback_db when that band holds no point), the bass PEQs towards the
-    coax level over MATCH_BANDS["coax_lf"], then the bass delay and polarity aligned to the coax. Delays are
+    matching it over MATCH_BANDS["bass"] (fallback_db when that band holds no point), the coax PEQs over (fb, tl)
+    and the bass PEQs towards the coax level over MATCH_BANDS["coax_lf"], then the bass delay and polarity aligned to the coax. Delays are
     shifted so the smaller is 0."""
     m = sw.f <= tl
     f, i = sw.f[m], sw.obs.at23_idx
@@ -77,10 +79,12 @@ def _fit_at(sw: Ways, tl: float, fb: float, fallback_db: float | None) -> SemiAc
     gain = fallback_db if lb is None and fallback_db is not None else ref - (lb if lb is not None else math.nan)
     if not math.isfinite(gain):
         raise ValueError(f"no frequencies in level-matching band {MATCH_BANDS['bass']}")
+    hp = 20 * np.log10(np.abs(lr4(f, fb, "high") * c))  # the coax channel after its LR4 high-pass, gain 0 dB
+    ceq = fit_peq(f, hp, ref, (fb, tl), N_PEQ_COAX)
     eq = fit_peq(f, 20 * np.log10(np.abs(b)) + gain, ref, eq_band("bass", fb, fb), N_PEQ["bass"])
-    sa = SemiActive(fb, WayFilter(gain, 0.0, 1, eq), WayFilter(0.0, 0.0, 1, ()))
+    sa = SemiActive(fb, WayFilter(gain, 0.0, 1, eq), WayFilter(0.0, 0.0, 1, ceq))
     d, pol = align(f, _transfer(f, sa, "bass") * b, _transfer(f, sa, "coax") * c, ref, fb, tl, BASS_DELAYS)
-    return SemiActive(fb, WayFilter(gain, max(d, 0.0), pol, eq), WayFilter(0.0, max(-d, 0.0), 1, ()))
+    return SemiActive(fb, WayFilter(gain, max(d, 0.0), pol, eq), WayFilter(0.0, max(-d, 0.0), 1, ceq))
 
 
 def fit_semi_active(ways: Ways, z: Callable[[np.ndarray], dict[str, np.ndarray]], tl: float, fit: PassiveFit,
@@ -126,7 +130,7 @@ def semi_active_text(sa: SemiActive, tl: float, *, design: str, sha: str) -> str
         f"# point: bass to coax {sa.bass_coax:g} Hz",
         "# two amp channels: bass drives the bare woofer pair; coax feeds the passive coax boards, "
         "with the coax high-pass links fitted",
-        "# acoustic target: LR4 at the point; the electrical filters are the LR4 sections plus the bass PEQ",
+        "# acoustic target: LR4 at the point; the electrical filters are the LR4 sections plus each channel's PEQs",
         "# delays are relative, the smaller is 0",
         "# gains are relative (coax 0 dB): normalise them in the DSP so the largest boost does not clip",
         f"# a PEQ marked {AT_LIMIT!r} has its gain at the fitter's end of range, where the fit stopped",

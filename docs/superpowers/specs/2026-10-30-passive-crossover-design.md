@@ -122,7 +122,10 @@ parts the active modes don't use.
 - The DSP side is fitted with the existing active machinery, reduced to two channels:
   - an LR4 split on the same grid of bass-to-coax points;
   - bass gain, delay, polarity and up to 2 PEQs;
-  - coax gain only, since its EQ is in the passive network.
+  - coax gain, delay and up to 4 PEQs (amended 2026-10-30 during implementation, after the real-data
+    preview; the owner has not yet reviewed this change). The first version had coax gain only, since its
+    EQ is in the passive network, but that left the coax LF's cardioid-chamber droop below about 300 Hz
+    unfilled (preview: semi-active flat23 3.09 dB against active 1.16 dB), and a DSP can EQ it.
   
   The DSP can delay the bass, so semi-active should recover most of the active rear rejection. The
   report shows how much.

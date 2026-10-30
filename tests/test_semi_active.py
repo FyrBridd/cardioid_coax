@@ -5,7 +5,10 @@ import numpy as np
 import pytest
 from fakes import SAMPLE, omni_ways
 
+from dataclasses import replace
+
 from speaker.crossover import Peq, WayFilter
+from speaker.curves import smooth
 from speaker.passive import PassiveFit, Topology, value_names
 from speaker.semi_active import SemiActive, fit_semi_active, semi_active_text, semi_total, semi_ways
 
@@ -51,7 +54,7 @@ def test_semi_active_recovers_a_known_bass_delay(monkeypatch):
     shift = lambda s: s.coax.delay_s - s.bass.delay_s
     assert shift(sa) - shift(base) == pytest.approx(0.8e-3, abs=0.05e-3)
     assert min(sa.bass.delay_s, sa.coax.delay_s) == 0.0
-    assert sa.bass.polarity == base.bass.polarity == 1 and sa.coax.polarity == 1 and sa.coax.peq == ()
+    assert sa.bass.polarity == base.bass.polarity == 1 and sa.coax.polarity == 1
 
 
 def test_bass_gain_matches_the_coax_level_through_the_network():
@@ -64,7 +67,7 @@ def test_bass_gain_matches_the_coax_level_through_the_network():
     low = (F >= 80) & (F <= 150)
     bass_db = np.mean(20 * np.log10(np.abs(sw.ways["bass"][low, i])))
     sa = fit_semi_active(w, _resistive(), 5000.0, _fit())
-    assert sa.coax.gain_db == 0.0 and sa.coax.peq == ()
+    assert sa.coax.gain_db == 0.0
     assert sa.bass.gain_db == pytest.approx(coax_db - bass_db, abs=1e-9) and len(sa.bass.peq) <= 2
 
 
@@ -74,3 +77,31 @@ def test_semi_active_text_has_two_channels_and_biquads_at_both_rates():
     assert "bass\tdelay_ms" in txt and "coax\tgain" in txt and "# fs = 48000" in txt and "# fs = 96000" in txt
     assert "high-pass links" in txt and "bass\tpeq\t100.0" in txt and "round-3.toml" in txt
     assert txt.count("lr4_lp 200 Hz") == 4 and txt.count("lr4_hp 200 Hz") == 4
+
+
+def test_semi_active_coax_channel_gets_peqs_for_a_low_end_droop(monkeypatch):
+    import speaker.semi_active as S
+    monkeypatch.setattr(S, "BASS_COAX_GRID", (150.0,))
+    w = omni_ways(F)
+    # first-order low shelf: -8 dB well below 300 Hz, 0 dB well above
+    g = 10 ** (-8 / 20)
+    shelf = (g + 1j * F / 300.0) / (1 + 1j * F / 300.0)
+    w.ways["coax_lf"] = w.ways["coax_lf"] * shelf[:, None]
+    sa = fit_semi_active(w, _resistive(), 5000.0, _fit())
+    assert len(sa.coax.peq) > 0
+    bare = replace(sa, coax=replace(sa.coax, peq=()))
+    sw = semi_ways(w, _resistive(), _fit())
+    m = (F >= sa.bass_coax) & (F <= 1000.0)
+
+    def spread(x):
+        db = smooth(F, 20 * np.log10(np.abs(semi_total(sw, x)[:, w.obs.at23_idx])), 1 / 3)[m]
+        return db.max() - db.min()
+
+    assert spread(sa) < spread(bare)
+
+
+def test_semi_active_text_lists_coax_peqs():
+    sa = SemiActive(200.0, WayFilter(1.5, 0.25e-3, -1, ()), WayFilter(0.0, 0.0, 1, (Peq(150.0, 6.0, 1.2),)))
+    txt = semi_active_text(sa, 2851.0, design="round-3.toml", sha="abcd1234")
+    assert "coax\tpeq\t150.0\t+6.00\t1.200" in txt
+    assert txt.count("coax\tpeq 150 Hz 6 dB Q1.2") == 2
