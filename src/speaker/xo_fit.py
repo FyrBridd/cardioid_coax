@@ -155,7 +155,7 @@ def _smooth_cols(f: np.ndarray, db: np.ndarray, fraction: float) -> np.ndarray:
     return 10.0 * np.log10(m @ 10.0 ** (db / 10.0) / m.sum(axis=1)[:, None])
 
 
-def _align(f: np.ndarray, h: np.ndarray, h_ref: np.ndarray, ref: float, fc: float, tl: float,
+def align(f: np.ndarray, h: np.ndarray, h_ref: np.ndarray, ref: float, fc: float, tl: float,
            delays: np.ndarray) -> tuple[float, int]:
     """Delay and polarity of h (23° complex, filtered) that minimise the RMS of the smoothed sum
     with h_ref against ref over [fc/2, 2 fc] ∩ [f[0], tl]. Ties keep the first (polarity +1 first)."""
@@ -206,8 +206,8 @@ def fit_at(w: Ways, tl: float, fb: float, fh: float,
     h = {k: way_transfer(f, xo, k) * w.ways[k][:, i] for k in ways}
     d = {REF_WAY: 0.0}
     pol = {REF_WAY: 1}
-    d["bass"], pol["bass"] = _align(f, h["bass"], h[REF_WAY], ref, fb, tl, BASS_DELAYS)
-    d["coax_hf"], pol["coax_hf"] = _align(f, h["coax_hf"], h[REF_WAY], ref, fh, tl, HF_DELAYS)
+    d["bass"], pol["bass"] = align(f, h["bass"], h[REF_WAY], ref, fb, tl, BASS_DELAYS)
+    d["coax_hf"], pol["coax_hf"] = align(f, h["coax_hf"], h[REF_WAY], ref, fh, tl, HF_DELAYS)
     d0 = min(d.values())
     return replace(xo, ways={k: replace(v, delay_s=d[k] - d0, polarity=pol[k]) for k, v in ways.items()})
 
