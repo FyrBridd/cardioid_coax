@@ -199,3 +199,106 @@ def test_fit_smoothing_is_curves_smooth():
     db = 10 * np.sin(np.linspace(0, 20, len(FIT_F)))
     np.testing.assert_allclose(10 * np.log10(_smoother(FIT_F, FIT_SMOOTH) @ 10 ** (db / 10)),
                                smooth(FIT_F, db, FIT_SMOOTH))
+
+
+def _small_search(monkeypatch):
+    # two points each; the 1000 Hz point sits below lf_hf_min=1200 and must be floored out
+    monkeypatch.setattr("speaker.passive.BASS_COAX_GRID", (170.0, 210.0))
+    monkeypatch.setattr("speaker.passive.LF_HF_GRID", (1000.0, 1600.0))
+    monkeypatch.setattr("speaker.passive.TOL_DRAWS", 20)
+
+
+def test_search_returns_a_grid_point_at_or_above_the_floor(monkeypatch):
+    from speaker.passive import OPTIONS, PassiveResult, Tolerance, search_passive
+    _small_search(monkeypatch)
+    res = search_passive(omni_ways(FIT_F), _resistive(), 2851.0, lf_hf_min=1200.0)
+    assert isinstance(res, PassiveResult) and isinstance(res.tolerance, Tolerance)
+    assert res.fit.bass_coax in (170.0, 210.0) and res.fit.lf_hf == 1600.0
+    assert res.fit.z_ok and res.series is None
+    assert res.fit.z_floor >= 3.5
+    assert len(res.notes) >= 1 + len(OPTIONS) + 1  # grid choice, each option, the tolerance check
+    assert all(isinstance(n, str) and n.endswith(".") for n in res.notes)
+
+
+def test_search_with_no_lf_hf_point_above_the_driver_minimum_raises(monkeypatch):
+    from speaker.passive import search_passive
+    _small_search(monkeypatch)
+    with pytest.raises(ValueError, match="2500 Hz"):
+        search_passive(omni_ways(FIT_F), _resistive(), 2851.0, lf_hf_min=2500.0)
+
+
+def test_search_falls_back_to_series_woofers_when_no_parallel_network_clears_the_floor(monkeypatch):
+    # 1 ohm: even the largest bass inductor (20 mH, with its DCR) leaves |Z_in| at 20 Hz under 3.5 ohm
+    from speaker.passive import search_passive
+    _small_search(monkeypatch)
+    res = search_passive(omni_ways(FIT_F), _resistive(bass=1.0), 2851.0, lf_hf_min=1200.0)
+    assert res.fit.z_ok is False
+    assert res.series is not None and res.series.fit.topo.bass_wiring == "series"
+    assert res.series.series is None
+    assert any("series" in n for n in res.notes)
+
+
+def test_tolerance_is_deterministic():
+    from speaker.passive import passive_scores, tolerance
+    w, z = omni_ways(FIT_F), _resistive()
+    fit = fit_passive_at(w, z, 2851.0, 200.0, 1600.0, Topology())
+    a, b = tolerance(w, z, 2851.0, fit, n=20), tolerance(w, z, 2851.0, fit, n=20)
+    assert a == b
+    assert a.z_min < fit.z_min * 1.2 and a.whole_rear[0] <= a.whole_rear[1]
+    flat23 = [s.value for s in passive_scores(w, fit, z, 2851.0) if s.key == "flat23" and s.confidence == "trusted"]
+    assert a.flat23_nominal == pytest.approx(flat23[0])
+
+
+def _near_floor_fit(z_target):
+    """A 2nd-order network whose minimum |Z_in| sits at 20 Hz on the bass inductor (20 mH, so its reactance
+    is large), with the bass load chosen so that minimum is z_target ohm at nominal values."""
+    from scipy.optimize import brentq
+    t = Topology()
+    v = {n: SAMPLE[n] for n in value_names(t, "passive")} | {"L_b1": 20e-3, "C_b1": 10e-6}
+
+    def z_min(rb):
+        _, z_in = transfers(build(v, t, "passive"), Z_GRID, driver_loads(_resistive(bass=rb)(Z_GRID), t), t)
+        return float(np.min(np.abs(z_in)))
+    rb = brentq(lambda r: z_min(r) - z_target, 0.5, 8.0)
+    return PassiveFit(200.0, 1600.0, t, v, v, 3.3, z_min(rb), True, 0.0), _resistive(bass=rb)
+
+
+def test_tolerance_fails_below_3_3_ohm():
+    from speaker.passive import tolerance
+    fit, z = _near_floor_fit(3.35)
+    assert fit.z_min == pytest.approx(3.35, abs=1e-6)
+    tol = tolerance(omni_ways(FIT_F), z, 2851.0, fit, n=20)
+    assert tol.z_min < 3.3 and tol.passed is False
+
+
+def test_tolerance_passes_well_clear_of_the_floor():
+    from speaker.passive import tolerance
+    fit, z = _near_floor_fit(4.0)
+    tol = tolerance(omni_ways(FIT_F), z, 2851.0, fit, n=20)
+    assert 3.3 < tol.z_min < 4.0
+    assert tol.passed == (tol.flat23_p95 <= tol.flat23_nominal + 0.5)
+
+
+def test_an_option_is_kept_only_for_a_real_flat23_gain_at_little_cost_elsewhere():
+    from speaker.passive import _option_verdict
+    old = dict(window_spread=1.0, presence_lift=1.0, di_smooth_bass=0.5, di_smooth_lfhf=0.5, flat23=1.0,
+               whole_rear=10.0)
+    assert _option_verdict(old, old | {"flat23": 0.9}) == ""
+    assert "0.1 dB" in _option_verdict(old, old | {"flat23": 0.95})
+    assert "no better" in _option_verdict(old, old | {"flat23": 1.2})
+    assert "window_spread" in _option_verdict(old, old | {"flat23": 0.5, "window_spread": 1.3})
+    assert _option_verdict(old, old | {"flat23": 0.5, "window_spread": 1.2}) == ""
+    assert "whole_rear" in _option_verdict(old, old | {"flat23": 0.5, "whole_rear": 9.7})  # higher is better
+    assert _option_verdict(old, old | {"flat23": 0.5, "whole_rear": 12.0}) == ""
+
+
+def test_passive_scores_are_score_all_on_the_passive_total():
+    from speaker.passive import passive_scores
+    from speaker.scores import score_all
+    from speaker.spinorama import spinorama
+    w, z, t = omni_ways(FIT_F), _resistive(), Topology()
+    fit = PassiveFit(200.0, 1600.0, t, {n: SAMPLE[n] for n in value_names(t, "passive")}, {}, 3.5, 4.0, True, 0.0)
+    total = passive_total(w, fit, z)
+    want = score_all(w.f, total, w.ways["coax_lf"], w.obs, spinorama(total, w.obs, f=w.f), trusted_limit=2851.0)
+    got = passive_scores(w, fit, z, 2851.0)
+    assert [(s.key, s.confidence, s.value) for s in got] == [(s.key, s.confidence, s.value) for s in want]

@@ -1,6 +1,7 @@
 """The passive crossover topology: which parts exist for a set of options, the netlist they form in passive
 and semi-active modes, the driver loads, and each way's terminal voltage per input volt; and the fit of the
-part values at one pair of crossover points, snapped to standard values.
+part values at one pair of crossover points, snapped to standard values; the search over crossover points,
+polarities and options, the part-tolerance check, and the series-woofer fallback.
 
 Passive: a bass low-pass on `in`, and a coax high-pass from `in` to node `cx`, which feeds the coax LF
 (low-pass, optional notch, L-pad) and the coax HF (high-pass, L-pad, optional series RLC shunt).
@@ -8,8 +9,9 @@ Semi-active: the coax network alone, with `cx` being `in` (the DSP supplies the 
 """
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 import numpy as np
@@ -17,7 +19,10 @@ from scipy.optimize import least_squares
 
 from speaker.crossover import match_gains
 from speaker.network import Part, inductor_dcr, neighbours, snap, solve
-from speaker.system import Ways
+from speaker.scores import Score, score_all
+from speaker.spinorama import spinorama
+from speaker.system import Ways, coax_section
+from speaker.xo_fit import BASS_COAX_GRID, LF_HF_GRID, SEARCH_KEYS, pick
 
 Mode = Literal["passive", "semi_active"]
 
@@ -220,7 +225,12 @@ def passive_total(ways: Ways, fit: PassiveFit, z: Callable[[np.ndarray], dict[st
     """(nf, nd) complex sum of the ways through the network at fit.values; semi_active sums the coax only."""
     t = fit.topo
     h, _ = transfers(build(fit.values, t, mode), ways.f, driver_loads(z(ways.f), t), t)
-    scale = {"bass": bass_scale(t)}
+    return _sum(ways, h, t)
+
+
+def _sum(ways: Ways, h: dict[str, np.ndarray], topo: Topology) -> np.ndarray:
+    """(nf, nd) sum of the ways in h, each through its terminal voltage h (on ways.f)."""
+    scale = {"bass": bass_scale(topo)}
     return sum(scale.get(k, 1.0) * h[k][:, None] * ways.ways[k] for k in h)
 
 
@@ -322,3 +332,202 @@ def fit_passive_at(ways: Ways, z: Callable[[np.ndarray], dict[str, np.ndarray]],
                     vals, best, changed = t, k, True
     _, cost, z_min = best
     return PassiveFit(fb, fh, topo, vals, continuous, z_floor, z_min, z_min >= z_floor, cost)
+
+
+OPTIONS = ("zobel", "bass_order", "lf_order", "lf_notch", "hf_shunt")  # tried in this order; an order "on" is 3
+OPTION_TEXT = {"zobel": "the Zobel across the woofers", "bass_order": "a 3rd-order bass low-pass",
+               "lf_order": "a 3rd-order coax LF low-pass", "lf_notch": f"the coax LF notch at {NOTCH_HZ:g} Hz",
+               "hf_shunt": "the RLC shunt across the coax HF"}
+OPTION_GAIN_DB = 0.1  # dB, the least trusted flat23 improvement that keeps an option
+OPTION_SLACK_DB = 0.25  # dB, the most any other search score may get worse for it
+_DB_EPS = 1e-9  # dB, so a change of exactly a threshold counts as reaching it
+TOL_DRAWS = 200  # random draws of the part values
+TOL_SPREAD = 0.05  # each L and C uniform within +-5 %
+TOL_SEED = 0
+TOL_Z_MIN = 3.3  # ohm, no draw may go lower
+TOL_FLAT_DB = 0.5  # dB, the 95th-percentile flat23 may be at most this far above the nominal one
+FLOOR_STEP = 0.1  # ohm, the floor is raised by this while the tolerance check fails
+FLOOR_MAX = 3.8  # ohm, and no further
+
+
+def _score(ways: Ways, total: np.ndarray, tl: float) -> list[Score]:
+    spin = spinorama(total, ways.obs, f=ways.f)
+    return score_all(ways.f, total, coax_section(ways), ways.obs, spin, trusted_limit=tl,
+                     puck_blend=ways.meta.get("puck_blend"), coax_far=ways.meta.get("coax_far_h0_h180"))
+
+
+def passive_scores(ways: Ways, fit: PassiveFit, z: Callable[[np.ndarray], dict[str, np.ndarray]], tl: float,
+                   mode: Mode = "passive") -> list[Score]:
+    """score_all on the passive total over all of ways, with the arguments xo_fit.fit_active passes; scores
+    above tl come out low-confidence, and only the trusted ones enter the search."""
+    return _score(ways, passive_total(ways, fit, z, mode), tl)
+
+
+def _trusted(scores: list[Score]) -> dict[str, float]:
+    """The trusted, finite SEARCH_KEYS values."""
+    return {s.key: float(s.value) for s in scores
+            if s.confidence == "trusted" and s.key in SEARCH_KEYS and math.isfinite(s.value)}
+
+
+@dataclass(frozen=True)
+class Tolerance:
+    z_min: float  # ohm, min |z_in| on Z_GRID of the worst draw
+    flat23_nominal: float  # dB, trusted, at the nominal values
+    flat23_p95: float  # dB, 95th percentile of the draws
+    whole_rear: tuple[float, float]  # dB, 5th and 95th percentile of the draws
+    passed: bool  # z_min >= TOL_Z_MIN and flat23_p95 <= flat23_nominal + TOL_FLAT_DB
+
+
+def tolerance(ways: Ways, z: Callable[[np.ndarray], dict[str, np.ndarray]], tl: float, fit: PassiveFit,
+              n: int = 200, spread: float = 0.05, seed: int = 0) -> Tolerance:
+    """n draws of fit's network (passive mode), every L and C scaled by its own uniform factor in
+    [1 - spread, 1 + spread] (np.random.default_rng(seed)); inductor DCR stays at the nominal part's and
+    resistors are exact. Each draw is evaluated as it stands, not refitted: min |z_in| on Z_GRID and the
+    trusted flat23 and whole_rear (nan where not trusted, which fails the check)."""
+    t = fit.topo
+    parts = build(fit.values, t, "passive")
+    f = np.asarray(ways.f, dtype=float)
+    nf = len(f)
+    grid = np.concatenate([f, Z_GRID])
+    zf, zg = driver_loads(z(f), t), driver_loads(z(Z_GRID), t)
+    loads = {k: np.concatenate([zf[k], zg[k]]) for k in zf}
+    lc = [j for j, p in enumerate(parts) if p.kind in ("L", "C")]
+    factors = np.random.default_rng(seed).uniform(1 - spread, 1 + spread, size=(n, len(lc)))
+
+    def run(ps: list[Part]) -> tuple[float, float, float]:
+        h, z_in = transfers(ps, grid, loads, t)
+        v = _trusted(_score(ways, _sum(ways, {k: x[:nf] for k, x in h.items()}, t), tl))
+        return float(np.abs(z_in[nf:]).min()), v.get("flat23", math.nan), v.get("whole_rear", math.nan)
+
+    _, flat0, _ = run(parts)
+    draws = []
+    for row in factors:
+        ps = list(parts)
+        for j, a in zip(lc, row):
+            ps[j] = replace(parts[j], value=parts[j].value * float(a))
+        draws.append(run(ps))
+    zs, flat, rear = np.array(draws).reshape(n, 3).T
+    z_min, p95 = float(zs.min()), float(np.percentile(flat, 95))
+    passed = z_min >= TOL_Z_MIN and math.isfinite(flat0) and math.isfinite(p95) and p95 <= flat0 + TOL_FLAT_DB
+    return Tolerance(z_min, flat0, p95, (float(np.percentile(rear, 5)), float(np.percentile(rear, 95))),
+                     bool(passed))
+
+
+@dataclass(frozen=True)
+class PassiveResult:
+    fit: PassiveFit
+    tolerance: Tolerance
+    series: PassiveResult | None  # the woofers-in-series alternative, only when fit is not z_ok
+    notes: list[str]  # one plain sentence per decision, in the order taken
+
+
+def _option_verdict(old: dict[str, float], new: dict[str, float]) -> str:
+    """Why an option's trusted SEARCH_KEYS scores new do not beat old ("" when they do): flat23 must improve by
+    OPTION_GAIN_DB, and no other score may get worse by more than OPTION_SLACK_DB (whole_rear higher is better,
+    every other key lower)."""
+    gain = old["flat23"] - new["flat23"]
+    if gain < OPTION_GAIN_DB - _DB_EPS:
+        how = "no better" if gain <= 0 else f"less than the {OPTION_GAIN_DB:g} dB gain needed"
+        return f"flat23 {old['flat23']:.2f} → {new['flat23']:.2f} dB, {how}"
+    for k in SEARCH_KEYS:
+        worse = old[k] - new[k] if k == "whole_rear" else new[k] - old[k]
+        if k != "flat23" and worse > OPTION_SLACK_DB + _DB_EPS:
+            return f"{k} worse by {worse:.2f} dB (at most {OPTION_SLACK_DB:g} dB allowed)"
+    return ""
+
+
+def _polarity(t: Topology) -> str:
+    return (f"bass {'inverted' if t.bass_inverted else 'normal'}, "
+            f"coax HF {'inverted' if t.hf_inverted else 'normal'}")
+
+
+def _grid(ways: Ways, z: Callable[[np.ndarray], dict[str, np.ndarray]], tl: float, lf_hf: list[float],
+          base: Topology, z_floor: float) -> tuple[PassiveFit, dict[str, float], int]:
+    """At every grid pair, the lowest-cost of the four polarity pairs; pick among those with every trusted
+    SEARCH_KEYS score (grid order, bass_coax outer, lf_hf inner). Returns the fit, its scores and the count."""
+    cands = []
+    for fb in BASS_COAX_GRID:
+        for fh in lf_hf:
+            fit = min((fit_passive_at(ways, z, tl, fb, fh, replace(base, bass_inverted=bi, hf_inverted=hi), z_floor)
+                       for bi in (False, True) for hi in (False, True)), key=lambda x: x.cost)
+            v = _trusted(passive_scores(ways, fit, z, tl))
+            if len(v) == len(SEARCH_KEYS):
+                cands.append(((fit, v), v))
+    if not cands:
+        raise ValueError(f"no passive crossover candidate has all {len(SEARCH_KEYS)} trusted search scores")
+    fit, v = pick(cands)
+    return fit, v, len(cands)
+
+
+def _tolerance_why(tol: Tolerance) -> str:
+    why = []
+    if not tol.z_min >= TOL_Z_MIN:
+        why.append(f"worst draw {tol.z_min:.2f} Ω, under {TOL_Z_MIN:g} Ω")
+    if not tol.flat23_p95 <= tol.flat23_nominal + TOL_FLAT_DB:
+        why.append(f"flat23 {tol.flat23_p95:.2f} dB at the 95th percentile against {tol.flat23_nominal:.2f} dB "
+                   f"nominal")
+    return "; ".join(why) or "no reason recorded"
+
+
+def _search(ways: Ways, z: Callable[[np.ndarray], dict[str, np.ndarray]], tl: float, lf_hf: list[float],
+            base: Topology, z_floor: float) -> PassiveResult:
+    """Steps 1-3 of search_passive for one bass wiring."""
+    fit, v, count = _grid(ways, z, tl, lf_hf, base, z_floor)
+    notes = [f"Chose {fit.bass_coax:g} Hz bass to coax and {fit.lf_hf:g} Hz coax LF to HF from {count} grid pairs, "
+             f"woofers in {base.bass_wiring} ({_polarity(fit.topo)}): flat23 {v['flat23']:.2f} dB, "
+             f"whole_rear {v['whole_rear']:.2f} dB."]
+
+    for opt in OPTIONS:
+        t = replace(fit.topo, **{opt: 3 if opt.endswith("_order") else True})
+        new = fit_passive_at(ways, z, tl, fit.bass_coax, fit.lf_hf, t, fit.z_floor)
+        nv = _trusted(passive_scores(ways, new, z, tl))
+        if len(nv) < len(SEARCH_KEYS):
+            why = "not every search score is trusted with it"
+        elif fit.z_ok and not new.z_ok:
+            why = f"it takes the impedance to {new.z_min:.2f} Ω, under the {fit.z_floor:g} Ω floor"
+        else:
+            why = _option_verdict(v, nv)
+        if why:
+            notes.append(f"Left out {OPTION_TEXT[opt]}: {why}.")
+        else:
+            notes.append(f"Kept {OPTION_TEXT[opt]}: flat23 {v['flat23']:.2f} → {nv['flat23']:.2f} dB.")
+            fit, v = new, nv
+
+    tol = tolerance(ways, z, tl, fit, n=TOL_DRAWS, spread=TOL_SPREAD, seed=TOL_SEED)
+    while not tol.passed and fit.z_floor < FLOOR_MAX - 1e-9:
+        floor = round(fit.z_floor + FLOOR_STEP, 6)
+        notes.append(f"Raised the impedance floor to {floor:g} Ω: the tolerance check failed at "
+                     f"{fit.z_floor:g} Ω ({_tolerance_why(tol)}).")
+        fit = fit_passive_at(ways, z, tl, fit.bass_coax, fit.lf_hf, fit.topo, floor)
+        tol = tolerance(ways, z, tl, fit, n=TOL_DRAWS, spread=TOL_SPREAD, seed=TOL_SEED)
+    if tol.passed:
+        notes.append(f"The tolerance check passes at the {fit.z_floor:g} Ω floor: worst draw {tol.z_min:.2f} Ω, "
+                     f"flat23 {tol.flat23_nominal:.2f} dB nominal and {tol.flat23_p95:.2f} dB at the 95th "
+                     f"percentile.")
+    else:
+        notes.append(f"The tolerance check still fails at the {fit.z_floor:g} Ω floor, the highest tried "
+                     f"({_tolerance_why(tol)}).")
+    return PassiveResult(fit, tol, None, notes)
+
+
+def search_passive(ways: Ways, z: Callable[[np.ndarray], dict[str, np.ndarray]], tl: float,
+                   lf_hf_min: float | None, z_floor: float = 3.5) -> PassiveResult:
+    """The passive network: (1) at every grid pair (LF_HF_GRID floored at lf_hf_min) the lowest-cost polarity
+    pair, scored by passive_scores, the points chosen with xo_fit.pick; (2) at those points, each of OPTIONS
+    in turn, kept when _option_verdict allows and the floor still holds; (3) while the tolerance check fails
+    and the floor is under FLOOR_MAX, a refit at the same points and topology with the floor FLOOR_STEP
+    higher; (4) if the final fit is not z_ok, steps 1-3 again with the woofers in series, attached as
+    `series`. Each step leaves a sentence in notes."""
+    lf_hf = [fh for fh in LF_HF_GRID if lf_hf_min is None or fh >= lf_hf_min]
+    if not lf_hf:
+        raise ValueError(f"no LF-HF grid point is at or above the driver's {lf_hf_min:g} Hz; "
+                         f"the grid stops at {LF_HF_GRID[-1]:g} Hz")
+    res = _search(ways, z, tl, lf_hf, Topology(), z_floor)
+    if res.fit.z_ok:
+        return res
+    series = _search(ways, z, tl, lf_hf, Topology(bass_wiring="series"), z_floor)
+    raised = f", raised from {z_floor:g} Ω by the tolerance check" if res.fit.z_floor != z_floor else ""
+    tail = "" if series.fit.z_ok else f", though it does not clear its {series.fit.z_floor:g} Ω floor either"
+    note = (f"No parallel-woofer network clears the {res.fit.z_floor:g} Ω floor{raised} (its lowest is "
+            f"{res.fit.z_min:.2f} Ω); the woofers-in-series alternative is attached{tail}.")
+    return replace(res, series=series, notes=[*res.notes, note])
