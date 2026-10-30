@@ -19,12 +19,19 @@ The passive and semi-active options are extra ways to drive the same box.
 
 ## What changed from the plan while building it
 
-1. **The level is tied to the woofers'.** The fit's level must stay within 1 dB of the woofers' own level. A first
-   preview with the level left free threw away about 7 dB of sensitivity through a 51 Ω series resistor.
+1. **The level is tied to the woofers'.** This is a soft target, not a hard rule. The fit is penalised when its
+   mean level (weighted, 150 Hz to 2.85 kHz) falls more than 1 dB under the woofers' own level, so it has about 1 dB
+   of slack. The sensitivity figure below is measured differently (23°, 300-1000 Hz), so its 1.3 dB shortfall is not a
+   violation. A first preview run (earlier in this work, not in this round's outputs) with the level left free threw
+   away about 7 dB of sensitivity through a 51 Ω series resistor.
 2. **The woofers must stay quiet under the coax LF.** From twice the bass crossover (300 Hz) up to 600 Hz they must
-   sit at least 10 dB under the coax LF. Without this, the passive woofers ran about 8 dB under the coax out to
-   about 800 Hz. That filled the coax LF's low-end droop (the cardioid chamber leaves the coax LF about 9 dB down
-   at 150 Hz) and let non-cardioid sound into the band the cardioid section must own.
+   sit at least 10 dB under the coax LF. This is also a penalty in the fit, not a guarantee. Without it, the passive
+   woofers ran about 8 dB under the coax out to about 800 Hz (an earlier preview run, not in this round's outputs).
+   That filled the coax LF's low-end droop (the cardioid chamber leaves the coax LF about 9 dB down at 150 Hz, from
+   the round 3c data) and let non-cardioid sound into the band the cardioid section must own. **The delivered network
+   nearly meets it, and misses at the bottom of the band.** I recomputed it from this run (23°, 1/3-octave smoothed,
+   as the fit does): the woofers sit 9.5 dB under the coax LF at 300 Hz and 9.8 dB at 317 Hz, so 0.5 dB short at
+   the worst point, 2 of 14 grid points. From 336 Hz up they are 10.5 dB under or more, reaching 16.5 dB at 600 Hz.
 3. **A coax LF contour (shelf) network is offered, but not used.** It was tried first. On this design the search left
    it out: it improved flatness by only 0.08 dB.
 4. **Semi-active: the coax DSP channel gets EQ.** The design said gain only. The EQ is fitted before the DSP
@@ -72,8 +79,10 @@ are in `parts.csv`.
 
 **Impedance and level:**
 - Minimum impedance is **3.61 Ω at 20 kHz**, which is 0.11 Ω over the 3.5 Ω floor (`plots/impedance.png` shows the
-  3.5 Ω line). The floor is the amplifier's minimum. The woofers on their own (semi-active bass channel) fall to
-  3.26 Ω at 149 Hz, so that channel is below 3.5 Ω.
+  3.5 Ω line). The floor is the SA550's minimum.
+- **Semi-active impedance.** The coax channel's minimum is 3.54 Ω, only 0.04 Ω over the floor. The bass channel
+  (bare woofers in parallel) dips to **3.26 Ω at 149 Hz, below the 3.5 Ω the SA550 needs**. The fit and the tolerance
+  check do not cover that channel, because the amplifier for it is not chosen. Pick one that is happy at about 3 Ω there.
 - Sensitivity is **79.5 dB at 2 m for 2.83 V** (23°, 300-1000 Hz). That is 1.3 dB below what the woofers give alone.
 - **Tolerance check passed.** The worst of 200 draws was 3.49 Ω (limit 3.3 Ω). Flatness (flat23) was 1.43 dB nominal and
   1.65 dB at the 95th percentile (limit +0.5 dB). Whole_rear ran 10.19 to 10.67 dB (5th to 95th percentile).
@@ -82,7 +91,9 @@ are in `parts.csv`.
 **Power.** Resistor ratings follow the rule in `network.txt`: the first of 5, 10, 15, 20, 30, 50 W at or above the
 dissipation with one third of the amplifier's voltage (roughly what music averages). Two are close to their ratings:
 R_ls at 4.90 W against 5 W, and R_tp at 9.69 W against 10 W. At full voltage they would dissipate 44 W and 87 W.
-I would buy higher-rated parts than the listed ones, for margin. These are sine figures, so they are conservative for music.
+In semi-active mode (the same boards, but the amplifier channel carries only the coax) R_tp reaches 9.98 W at 1/3
+voltage against its 10 W rating, and R_ls 2.61 W against 5 W. I would buy higher-rated parts than the listed ones in
+both modes, for margin, at least R_tp. These are sine figures, so they are conservative for music.
 
 ### Warnings in network.txt
 
@@ -105,7 +116,7 @@ The bass channel drives the bare woofers in parallel. The coax channel feeds the
 - **Q limits.** Two coax PEQs sit at the fitter's Q limits: the 179 Hz one at the top (6.0, a very narrow cut) and the
   752 Hz one at the bottom (0.5, very broad). Both are small (0.8 dB). The marker in `semi_active.txt` only checks
   gain, so it does not flag them. The fit is working at the edge of what the PEQs can do, so these two do little.
-- **Stacked boost.** The coax channel's combined boost peaks at 8.2 dB at 151 Hz. That is large enough to need the
+- **Stacked boost.** The coax channel's combined boost (the three PEQs summed, computed by me from the values above) peaks at 8.2 dB at 151 Hz. That is large enough to need the
   usual care. Amplifier clipping and the coax LF's excursion at 150 Hz should be checked (see Open). The bass gain is
   −1.78 dB against the coax. Normalise in the DSP so the largest boost does not clip, as the file says.
 
@@ -127,7 +138,7 @@ The coax section's cardioid scores are the same because the coax is the same box
 
 ## Where passive falls short, and why
 
-- **Flatness.** Passive is 0.27 dB behind active at 23°, and semi-active is 0.74 dB behind. I did not find out why
+- **Flatness.** Passive is 0.26 dB behind active at 23°, and semi-active is 0.73 dB behind. I did not find out why
   semi-active is behind passive here. Both are within 0.8 dB of active. The owner can judge it from `plots/crossover_23_*.png`.
 - **The 2 to 5 kHz window.** Presence lift is 4.2 dB against 3.9 dB for active. All three are well above the
   0.5 dB the score calls a pass. Passive is not the cause: the lift is the coax's, and it was already there in
@@ -138,7 +149,7 @@ The coax section's cardioid scores are the same because the coax is the same box
   (`plots/whole_rear_compare.png`). The passive's slow filters give less rear rejection in the middle of the band.
   The score rewards passive for the one frequency where all three are weakest.
 - **Sensitivity.** 79.5 dB is 1.3 dB below the woofers alone. It needs about 1.3 dB more amplifier drive than the woofers alone for the same level. The active figure is not comparable, as each way has its own amplifier gain.
-- **Size and cost.** A 20 mH air-core coil, a 120 µF film capacitor and two 87 W-at-full-voltage resistors are not small
+- **Size and cost.** A 20 mH air-core coil, a 120 µF film capacitor and an R_tp that dissipates 87 W at full voltage (R_ls 44 W) are not small
   or cheap. Parts cost was not estimated.
 
 ## Notes
@@ -153,7 +164,7 @@ The coax section's cardioid scores are the same because the coax is the same box
 - Whether the owner wants passive at all: it needs one amplifier and no DSP, at lower rear rejection through the cardioid
   band and the parts above. Semi-active needs two channels and a DSP on the coax only.
 - Buy the resistors with margin, or check them against the full-voltage figures in `network.txt`.
-- The stacked 8.2 dB coax boost at 151 Hz needs a check of the coax LF's excursion and amplifier headroom.
+- The stacked 8.2 dB coax boost at 151 Hz (my sum of the three coax PEQs on the exported curves) needs a check of the coax LF's excursion and amplifier headroom.
 - Everything above depends on unmeasured drivers. Rerun after the coax and woofers are measured.
 - The VituixCAD netlist (`vituixcad_netlist.txt`) has not been imported or checked by the owner.
 - The owner's report page gets its Passive option from the controller after this round.
