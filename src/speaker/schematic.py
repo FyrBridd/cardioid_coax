@@ -197,41 +197,58 @@ def draw_network(parts: list[Part], title: str, path: Path) -> Path:
     return path
 
 
-def _links_rows(topo: Topology) -> list[tuple[str, str, str, str]]:
-    wiring = "two woofers in series" if topo.bass_wiring == "series" else "two woofers in parallel"
-    return [
-        ("Passive", "1 terminal pair\nIN (amplifier)",
-         f"No links fitted.\nBass low-pass and coax high-pass in circuit.\nBass: {wiring}.",
-         "None bypassed.\nEvery network is in circuit."),
-        ("Semi-active", "2 terminal pairs\nCOAX, BASS",
-         "Coax high-pass links fitted:\nlink across C_h1, L_h1 left out.\nCOAX feeds the coax LF and HF networks.",
-         "Bass low-pass and coax high-pass bypassed.\nBASS drives the woofers directly\n(the DSP supplies the split)."),
-        ("Fully active", "3 terminal pairs\nHF, LF, BASS",
-         "All series parts linked out,\nall shunt parts left out.\nHF, LF and BASS go straight to their drivers.",
-         "Every network bypassed\n(bass, coax LF, coax HF)."),
-    ]
+LINK_TEXT = {
+    "K1": "between IN and C_h1 (input of the coax high-pass)",
+    "K2": "in series with L_h1",
+    "K3": "between the bass network output and the woofers (the Zobel stays on the network side)",
+    "K4": "between the coax LF network output (after R_lp) and the LF driver",
+    "K5": "between the coax HF network output (after R_tp and the RLC shunt) and the HF driver",
+}
+
+
+def link_states(topo: Topology) -> dict[str, dict]:
+    """Per mode: the terminal pairs with what each connects to, and the state of links K1-K5."""
+    wiring = f"bass woofers ({topo.bass_wiring})"
+    return {
+        "Passive": {"pairs": "1 terminal pair", "terminals": [("IN", "the amplifier")],
+                    "K": dict(K1="closed", K2="closed", K3="closed", K4="closed", K5="closed")},
+        "Semi-active": {"pairs": "2 terminal pairs",
+                        "terminals": [("COAX", "node cx (coax LF and HF networks)"),
+                                      ("BASS", f"straight to the {wiring}")],
+                        "K": dict(K1="open", K2="open", K3="open", K4="closed", K5="closed")},
+        "Fully active": {"pairs": "3 terminal pairs",
+                         "terminals": [("HF", "straight to the coax HF driver"),
+                                       ("LF", "straight to the coax LF driver"),
+                                       ("BASS", f"straight to the {wiring}")],
+                         "K": dict(K1="either", K2="either", K3="open", K4="open", K5="open")},
+    }
 
 
 def draw_links(topo: Topology, path: Path) -> Path:
-    """An SVG table of the three modes: terminal pairs, which links are fitted, which networks are bypassed."""
-    rows = _links_rows(topo)
-    heads = ("Mode", "Terminals", "Links", "Networks")
-    xs = (0.02, 0.16, 0.38, 0.70)
-    fig = Figure(figsize=(14, 6.2))
+    """An SVG table of the three modes: terminal pairs and what each connects to, and links K1-K5 open or closed."""
+    modes = link_states(topo)
+    ks = list(LINK_TEXT)
+    xs = (0.02, 0.15, 0.50, 0.60, 0.69, 0.78, 0.87, 0.96)
+    fig = Figure(figsize=(15, 7.5))
     ax = fig.add_axes((0, 0, 1, 1))
     ax.set_axis_off()
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
     ax.text(xs[0], 0.95, "Terminals and links by mode", fontsize=16, fontweight="bold", va="center")
-    for x, h in zip(xs, heads):
-        ax.text(x, 0.86, h, fontsize=12, fontweight="bold", va="center")
+    for x, h in zip(xs, ("Mode", "Terminals", *ks)):
+        ax.text(x, 0.86, h, fontsize=12, fontweight="bold", va="center", ha="left" if x < 0.55 else "center")
     ax.plot([0.02, 0.98], [0.82, 0.82], color="black", lw=1.2)
-    for i, row in enumerate(rows):
-        y = 0.66 - i * 0.27
-        for x, cell in zip(xs, row):
-            ax.text(x, y, cell, fontsize=11 if x != xs[0] else 13, fontweight="bold" if x == xs[0] else "normal",
-                    va="center", linespacing=1.5)
-        ax.plot([0.02, 0.98], [y - 0.13, y - 0.13], color="0.7", lw=0.8)
+    for i, (mode, m) in enumerate(modes.items()):
+        y = 0.70 - i * 0.18
+        ax.text(xs[0], y, f"{mode}\n{m['pairs']}", fontsize=12, fontweight="bold", va="center", linespacing=1.5)
+        ax.text(xs[2 - 1], y, "\n".join(f"{t}: {c}" for t, c in m["terminals"]), fontsize=11, va="center",
+                linespacing=1.6)
+        for x, k in zip(xs[2:], ks):
+            ax.text(x, y, m["K"][k], fontsize=11, va="center", ha="center")
+        ax.plot([0.02, 0.98], [y - 0.09, y - 0.09], color="0.7", lw=0.8)
+    ax.text(0.02, 0.19, "Links (removable):", fontsize=11, fontweight="bold", va="center")
+    for j, (k, t) in enumerate(LINK_TEXT.items()):
+        ax.text(0.02, 0.15 - j * 0.035, f"{k}: {t}", fontsize=10.5, va="center")
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with matplotlib.rc_context({"svg.fonttype": "none"}):

@@ -7,7 +7,7 @@ import pytest
 from fakes import SAMPLE
 
 from speaker.passive import Topology, build
-from speaker.schematic import draw_links, draw_network, fmt_value
+from speaker.schematic import draw_links, draw_network, fmt_value, link_states
 
 FULL = Topology(bass_order=3, zobel=True, lf_order=3, lf_notch=True, hf_shunt=True)
 
@@ -66,3 +66,26 @@ def test_links_svg_lists_three_modes(tmp_path):
     text = _text(draw_links(Topology(), tmp_path / "links.svg").read_text())
     assert "Passive" in text and "Semi-active" in text and "Fully active" in text
     assert "1 terminal pair" in text and "2 terminal pairs" in text and "3 terminal pairs" in text
+    for k in ("K1", "K2", "K3", "K4", "K5"):
+        assert text.count(k) >= 2  # the header and the legend
+    assert "linked out" not in text
+
+
+def test_link_states_pin_each_mode():
+    m = link_states(Topology())
+    assert list(m) == ["Passive", "Semi-active", "Fully active"]
+    assert all(set(v["K"]) == {"K1", "K2", "K3", "K4", "K5"} for v in m.values())
+    assert set(m["Passive"]["K"].values()) == {"closed"}
+    semi = m["Semi-active"]
+    assert semi["K"] == dict(K1="open", K2="open", K3="open", K4="closed", K5="closed")
+    assert ("COAX", "node cx (coax LF and HF networks)") in semi["terminals"]
+    assert [t for t, _ in semi["terminals"]] == ["COAX", "BASS"]
+    active = m["Fully active"]
+    assert active["K"]["K4"] == active["K"]["K5"] == active["K"]["K3"] == "open"
+    assert active["K"]["K1"] == active["K"]["K2"] == "either"
+    assert [t for t, _ in active["terminals"]] == ["HF", "LF", "BASS"]
+
+
+def test_links_svg_shows_the_states(tmp_path):
+    text = _text(draw_links(Topology(), tmp_path / "links.svg").read_text())
+    assert "COAX: node cx" in text and "open" in text and "either" in text
