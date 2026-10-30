@@ -518,3 +518,113 @@ def test_the_bass_under_term_skips_points_where_a_way_is_exactly_zero(monkeypatc
         monkeypatch.setattr(P, "BASS_UNDER_DB", 100.0)
         severe = fit_passive_at(w, z, 2851.0, 200.0, 1600.0, Topology())
     assert severe.values == off.values and severe.cost == pytest.approx(off.cost)
+
+
+# ---- the electrical stopband term (C1)
+
+def _inductive_bass(f, r=3.3, le=3e-3):
+    """The coax ways 8 ohm; the woofer pair r ohm plus a voice-coil inductance le (H)."""
+    f = np.asarray(f, dtype=float)
+    return {"coax_lf": np.full(len(f), 8.0 + 0j), "coax_hf": np.full(len(f), 8.0 + 0j),
+            "bass_pair": r + 2j * np.pi * f * le}
+
+
+def _stop_h(v, t, z, fb, fh, mode="passive"):
+    from speaker.passive import stop_grid
+    g = stop_grid(fb, fh)
+    h, _ = transfers(build(v, t, mode), g, driver_loads(z(g), t), t)
+    return h
+
+
+def test_a_bass_low_pass_resonating_with_the_voice_coil_is_penalised():
+    """8 mH with 3.3 µF on a 3.3 ohm + 3 mH load resonates near 1.5 kHz: the bass rises over its level at fb there."""
+    from speaker.passive import STOP_DB, stop_excess_db, stopbands
+    t, fb, fh = Topology(), 150.0, 1200.0
+    v = _values(t) | {"L_b1": 8e-3, "C_b1": 3.3e-6}
+    h = _stop_h(v, t, _inductive_bass, fb, fh)
+    bands = stopbands(fb, fh)
+    ex = stop_excess_db(h, fb, fh)
+    assert len(ex) == sum(int(m.sum()) for _, _, m in bands)
+    j = [k for k, _, _ in bands].index("bass")
+    start = sum(int(m.sum()) for _, _, m in bands[:j])
+    bass = ex[start:start + int(bands[j][2].sum())]
+    assert bass.max() > 20.0   # the resonance sits more than 20 dB over the STOP_DB line
+    # the same values on a resistive load are a plain low-pass: a much smaller excess
+    h8 = _stop_h(v, t, lambda f: _inductive_bass(f) | {"bass_pair": np.full(len(f), 3.3 + 0j)}, fb, fh)
+    assert stop_excess_db(h8, fb, fh)[start:start + len(bass)].max() < bass.max() - 10.0
+    assert STOP_DB == -12.0
+
+
+def test_the_fit_keeps_the_bass_out_of_its_far_stopband_on_an_inductive_load(monkeypatch):
+    """A 2.5 ohm + 1 mH woofer pair under the 3.5 ohm floor, its way exactly zero above the trusted limit (as the BEM
+    bass field is): the floor pushes the bass low-pass towards a small C_b1 that resonates with the voice coil where
+    the acoustic data cannot see it. The stopband term holds it STOP_DB under its level at fb from 4 fb up."""
+    import speaker.passive as P
+    w, t, fb, fh = omni_ways(FIT_F), Topology(), 150.0, 1200.0
+    w.ways["bass"][FIT_F > 2851.0] = 0
+    m = Z_GRID >= 4 * fb
+
+    def z(f):
+        return _inductive_bass(f, 2.5, 1e-3)
+
+    def worst(fit):
+        h = _stop_h(fit.values, t, z, fb, fh)
+        a = 20 * np.log10(np.abs(h["bass"]))
+        return float(a[:len(Z_GRID)][m].max() - a[len(Z_GRID)])
+    monkeypatch.setattr(P, "STOP_WEIGHT", 0.0)
+    free = worst(fit_passive_at(w, z, 2851.0, fb, fh, t))
+    monkeypatch.undo()
+    held = worst(fit_passive_at(w, z, 2851.0, fb, fh, t))
+    assert free > P.STOP_DB + 3.0   # without the term the fit lets the bass leak (this load invites it)
+    assert held <= P.STOP_DB + 0.5
+
+
+def test_the_stopband_term_covers_the_coax_hf_below_a_quarter_of_its_point():
+    from speaker.passive import STOP_DB, stop_excess_db, stopbands
+    t, fb, fh = Topology(), 150.0, 1200.0
+    leaky = _values(t) | {"C_t1": 200e-6, "C_t2": 200e-6, "L_t1": 20e-3}   # the HF high-pass barely acts
+    tight = _values(t) | {"C_t1": 6.8e-6, "C_t2": 10e-6, "L_t1": 0.6e-3}
+    for mode in ("passive", "semi_active"):
+        bands = stopbands(fb, fh, mode)
+        names = [k for k, _, _ in bands]
+        assert names.count("coax_hf") == 1
+        j = names.index("coax_hf")
+        _, fc, m = bands[j]
+        assert fc == fh and Z_GRID[m].max() <= fh / 4 and Z_GRID[m].min() == Z_GRID[0]
+        start = sum(int(x.sum()) for _, _, x in bands[:j])
+        sl = slice(start, start + int(m.sum()))
+        assert stop_excess_db(_stop_h(leaky, t, _resistive(), fb, fh, mode), fb, fh, mode)[sl].max() > 5.0
+        h = _stop_h(tight, t, _resistive(), fb, fh, mode)
+        assert stop_excess_db(h, fb, fh, mode)[sl].max() == 0.0
+        a = 20 * np.log10(np.abs(h["coax_hf"]))
+        assert a[:len(Z_GRID)][m].max() - a[len(Z_GRID) + 1] <= STOP_DB
+    # the coax LF's lower stopband exists in passive mode only (in semi-active the DSP owns that edge)
+    assert [k for k, _, _ in stopbands(fb, fh, "passive")].count("coax_lf") == 2
+    assert [k for k, _, _ in stopbands(fb, fh, "semi_active")].count("coax_lf") == 1
+    assert "bass" not in [k for k, _, _ in stopbands(fb, fh, "semi_active")]
+
+
+def test_an_option_that_lowers_the_impedance_further_under_the_floor_is_left_out(monkeypatch):
+    """Neither network clears the floor: an option may not buy flat23 with an even lower impedance."""
+    from speaker.passive import search_passive
+    _fake_search(monkeypatch, lambda fb, t: (2.9 if t.zobel else 3.0, 1.0),
+                 lambda fit: {"flat23": 0.5} if fit.topo.zobel else {})
+    res = search_passive(omni_ways(FIT_F), _resistive(), 2851.0, lf_hf_min=None)
+    assert not res.fit.topo.zobel
+    assert any(n.startswith("Left out the Zobel") and "3.00 Ω to 2.90 Ω" in n for n in res.notes)
+
+
+def test_a_failing_series_search_keeps_the_parallel_result_with_a_note(monkeypatch):
+    import speaker.passive as P
+    _fake_search(monkeypatch, lambda fb, t: (3.0, 1.0))
+    real = P._search
+
+    def boom(ways, z, tl, lf_hf, base, z_floor):
+        if base.bass_wiring == "series":
+            raise ValueError("no passive crossover candidate has all 6 trusted search scores")
+        return real(ways, z, tl, lf_hf, base, z_floor)
+    monkeypatch.setattr(P, "_search", boom)
+    res = P.search_passive(omni_ways(FIT_F), _resistive(), 2851.0, lf_hf_min=None)
+    assert res.series is None and res.fit.topo.bass_wiring == "parallel"
+    assert any("woofers-in-series" in n and "failed" in n and "no passive crossover candidate" in n
+               for n in res.notes)

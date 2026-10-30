@@ -173,8 +173,47 @@ NOTCH_HZ = 2700.0  # Hz, the coax LF cone breakup
 SHELF_DB = 7.5  # dB, the coax LF contour's starting cut above its corner (the LF is ~9 dB down at 150 Hz)
 SHELF_CORNER = 1.5  # the contour's starting corner, times fb
 SHUNT_HZ = float(np.sqrt(2000.0 * 3300.0))  # Hz, centre of the coax HF's 2-3.3 kHz hump
+STOP_DB = -12.0  # dB, the most a branch's |H| may reach in its far stopband, re |H| at the crossover point bounding it
+STOP_RATIO = 4.0  # the far stopband starts this factor beyond the crossover point
+# residual per dB of |H| over STOP_DB, at each Z_GRID point of a far stopband. On round 3's bass260-580 (whole search,
+# 2026-10-30) weights 3 and 10 left the bass 0.7 and 1.8 dB over the rule near 4 fb; 15, 20, 30, 50 and 100 held it
+# within 0.3 dB. 20 is one step above the lowest that held, so a small change in the driver data does not tip it over.
+STOP_WEIGHT = 20.0
 _EDGE = 1e-6  # keeps start values strictly inside the bounds (log scale)
 _LSQ_TOL = 1e-4  # least_squares ftol and xtol: finer log-value steps are lost in the ~20 % snap to standard values
+
+
+def stopbands(fb: float, fh: float, mode: Mode = "passive") -> list[tuple[str, float, np.ndarray]]:
+    """Each branch's far stopbands as (branch, the crossover point bounding it, mask on Z_GRID): the bass from
+    STOP_RATIO x fb up; the coax LF from STOP_RATIO x fh up and, in passive mode, from fb / STOP_RATIO down; the coax
+    HF from fh / STOP_RATIO down. Semi-active has no bass branch, and the DSP owns the coax's lower edge."""
+    out = []
+    if mode == "passive":
+        out.append(("bass", fb, Z_GRID >= STOP_RATIO * fb))
+        out.append(("coax_lf", fb, Z_GRID <= fb / STOP_RATIO))
+    out.append(("coax_lf", fh, Z_GRID >= STOP_RATIO * fh))
+    out.append(("coax_hf", fh, Z_GRID <= fh / STOP_RATIO))
+    return out
+
+
+def stop_grid(fb: float, fh: float) -> np.ndarray:
+    """The frequencies stop_excess_db reads transfers on: Z_GRID, then fb and fh."""
+    return np.concatenate([Z_GRID, [fb, fh]])
+
+
+def stop_excess_db(h: dict[str, np.ndarray], fb: float, fh: float, mode: Mode = "passive") -> np.ndarray:
+    """dB by which each branch's |H| sits over STOP_DB re its |H| at the crossover point bounding the band, at every
+    Z_GRID point of each of stopbands(fb, fh, mode) in turn (0 where it is under). h: transfers on stop_grid(fb, fh).
+    This is the network alone, with the driver loads; the acoustic data play no part (the bass field, say, is zero
+    above the trusted limit, where a resonance in its network would not show in the response)."""
+    n = len(Z_GRID)
+    ref = {fb: n, fh: n + 1}
+    out = []
+    for k, fc, m in stopbands(fb, fh, mode):
+        a = np.abs(h[k])
+        db = 20 * np.log10(np.maximum(a[:n][m], 1e-300) / max(float(a[ref[fc]]), 1e-300))
+        out.append(np.maximum(0.0, db - STOP_DB))
+    return np.concatenate(out)
 
 
 @dataclass(frozen=True)
@@ -302,7 +341,11 @@ def fit_passive_at(ways: Ways, z: Callable[[np.ndarray], dict[str, np.ndarray]],
     (smoothed alike, at 23°) at fb, and
     between the coax LF and HF at fh, which holds the crossovers at the points (flatness alone does not: on
     flat ways the sections can stagger anywhere and still sum flat); Z_PENALTY per ohm of |z_in| under z_floor
-    at each Z_GRID point; and, with the RLC shunt, Q_PENALTY per unit of its Q over SHUNT_Q_MAX.
+    at each Z_GRID point; STOP_WEIGHT per dB that a branch's |H| (the network on the driver loads, electrical, not
+    acoustic) sits over STOP_DB re its |H| at the crossover point, at each Z_GRID point of its far stopbands
+    (stopbands, stop_excess_db), which keeps a branch from resonating where the acoustic data cannot see it (the
+    bass is zero above tl, and the smoothing hides narrow peaks); and, with the RLC shunt, Q_PENALTY per unit of its
+    Q over SHUNT_Q_MAX.
 
     The log values are fitted inside BOUNDS by least squares from start_values (L-pads from the level
     difference), then snapped. Coordinate-descent passes then try each value's two standard neighbours (inside
@@ -313,8 +356,9 @@ def fit_passive_at(ways: Ways, z: Callable[[np.ndarray], dict[str, np.ndarray]],
     f = np.asarray(ways.f, dtype=float)
     nf, i = len(f), ways.obs.at23_idx
     zf, zg = driver_loads(z(f), topo), driver_loads(z(Z_GRID), topo)
-    grid = np.concatenate([f, Z_GRID])
-    loads = {k: np.concatenate([zf[k], zg[k]]) for k in zf}
+    zs = driver_loads(z(np.array([fb, fh])), topo)
+    grid = np.concatenate([f, stop_grid(fb, fh)])
+    loads = {k: np.concatenate([zf[k], zg[k], zs[k]]) for k in zf}
     resp = {k: ways.ways[k][:, i] * (bass_scale(topo) if k == "bass" else 1.0)
             for k in ("bass", "coax_lf", "coax_hf")}
     band = np.where((f >= FIT_LO) & (f <= tl), 1.0, np.where((f > tl) & (f <= FIT_TOP), ABOVE_WEIGHT, 0.0))
@@ -352,8 +396,9 @@ def fit_passive_at(ways: Ways, z: Callable[[np.ndarray], dict[str, np.ndarray]],
             if np.all(pa > 0) and np.all(pb > 0):
                 d = 10 * np.log10(pa / pb)
                 xr[n] = CROSS_WEIGHT * ((1 - t) * d[0] + t * d[1])
-        zm = np.abs(z_in[nf:])
-        pen = [Z_PENALTY * np.maximum(0.0, z_floor - zm)]
+        zm = np.abs(z_in[nf:nf + len(Z_GRID)])
+        pen = [Z_PENALTY * np.maximum(0.0, z_floor - zm),
+               STOP_WEIGHT * stop_excess_db({k: x[nf:] for k, x in h.items()}, fb, fh)]
         if topo.hf_shunt:
             pen.append([Q_PENALTY * max(0.0, np.sqrt(v["L_tr"] / v["C_tr"]) / v["R_tr"] - SHUNT_Q_MAX)])
         return np.concatenate([r, xr, lv, bu, *pen]), float(zm.min())
@@ -546,6 +591,9 @@ def _search(ways: Ways, z: Callable[[np.ndarray], dict[str, np.ndarray]], tl: fl
             why = "not every search score is trusted with it"
         elif fit.z_ok and not new.z_ok:
             why = f"it takes the impedance to {new.z_min:.2f} Ω, under the {fit.z_floor:g} Ω floor"
+        elif not fit.z_ok and not new.z_ok and new.z_min < fit.z_min:
+            why = (f"it lowers the impedance from {fit.z_min:.2f} Ω to {new.z_min:.2f} Ω, further under the "
+                   f"{fit.z_floor:g} Ω floor")
         elif new.z_ok and not fit.z_ok:  # the floor outranks the scores
             notes.append(f"Kept {OPTION_TEXT[opt]}: it lifts the impedance from {fit.z_min:.2f} Ω to "
                          f"{new.z_min:.2f} Ω, clearing the {fit.z_floor:g} Ω floor (flat23 {v['flat23']:.2f} → "
@@ -597,12 +645,14 @@ def search_passive(ways: Ways, z: Callable[[np.ndarray], dict[str, np.ndarray]],
     least shortfall under the floor, then the lowest cost, scored by passive_scores, the points chosen with
     xo_fit.pick (among the z_ok candidates when there are any); (2) at those points, each of OPTIONS in turn,
     kept when it lifts a network that misses the floor over it, or when _option_verdict allows and the floor
-    still holds; (3) while the tolerance check fails,
+    still holds (and, for a network already under the floor, the option does not lower its z_min further); (3)
+    while the tolerance check fails,
     the network meets its floor and the floor is under FLOOR_MAX, a refit at the same points and topology with
     the floor FLOOR_STEP higher, stopping (and keeping the last network that met its floor, with its tolerance
     result) at a refit that misses the raised floor; (4) if the final network's z_min is under z_floor (never
-    for a missed raised floor), steps 1-3 again with the woofers in series, attached as `series`. Each step
-    leaves a sentence in notes."""
+    for a missed raised floor), steps 1-3 again with the woofers in series, attached as `series` (should that search
+    raise ValueError, the parallel network is returned with a note saying why). Each step leaves a sentence in
+    notes."""
     lf_hf = [fh for fh in LF_HF_GRID if lf_hf_min is None or fh >= lf_hf_min]
     if not lf_hf:
         raise ValueError(f"no LF-HF grid point is at or above the driver's {lf_hf_min:g} Hz; "
@@ -610,7 +660,12 @@ def search_passive(ways: Ways, z: Callable[[np.ndarray], dict[str, np.ndarray]],
     res, any_ok = _search(ways, z, tl, lf_hf, Topology(), z_floor)
     if res.fit.z_min >= z_floor:
         return res
-    series, _ = _search(ways, z, tl, lf_hf, Topology(bass_wiring="series"), z_floor)
+    try:
+        series, _ = _search(ways, z, tl, lf_hf, Topology(bass_wiring="series"), z_floor)
+    except ValueError as e:  # keep the parallel network: it is still the answer for the woofers as they are
+        return replace(res, notes=[*res.notes, f"The chosen parallel-woofer network does not clear {z_floor:g} Ω (its "
+                                               f"lowest is {res.fit.z_min:.2f} Ω), and the woofers-in-series search "
+                                               f"failed: {e}."])
     tail = "" if series.fit.z_min >= z_floor else f", though it does not clear {z_floor:g} Ω either"
     if any_ok:
         head = f"The chosen parallel-woofer network does not clear {z_floor:g} Ω"
