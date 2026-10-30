@@ -9,7 +9,7 @@ from fakes import SAMPLE
 from speaker.passive import Topology, build
 from speaker.schematic import draw_links, draw_network, fmt_value, link_states
 
-FULL = Topology(bass_order=3, zobel=True, lf_order=3, lf_notch=True, hf_shunt=True)
+FULL = Topology(bass_order=3, zobel=True, lf_order=3, lf_notch=True, lf_shelf=True, hf_shunt=True)
 
 
 def _text(svg: str) -> str:

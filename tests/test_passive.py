@@ -10,7 +10,7 @@ from fakes import SAMPLE, omni_ways
 
 from speaker.crossover import Peq, peq
 from speaker.curves import smooth
-from speaker.network import snap
+from speaker.network import inductor_dcr, snap
 from speaker.passive import (
     BOUNDS, SHUNT_Q_MAX, Z_GRID, PassiveFit, Topology, bass_scale, build, driver_loads, fit_passive_at, passive_total,
     start_values, transfers, value_names,
@@ -18,7 +18,7 @@ from speaker.passive import (
 
 F = np.geomspace(20, 20000, 300)
 R8 = {k: np.full(len(F), 8.0 + 0j) for k in ("bass", "coax_lf", "coax_hf")}
-FULL = Topology(bass_order=3, zobel=True, lf_order=3, lf_notch=True, hf_shunt=True)
+FULL = Topology(bass_order=3, zobel=True, lf_order=3, lf_notch=True, lf_shelf=True, hf_shunt=True)
 
 
 def _values(t, mode="passive"):
@@ -445,6 +445,7 @@ def test_fit_holds_the_level_near_the_woofers_own(monkeypatch):
     w, z = omni_ways(FIT_F), _resistive()
     target = P.woofer_level_db(w, Topology())
     assert target == pytest.approx(0.0, abs=0.01)
+    monkeypatch.setattr(P, "LEAK_WEIGHT", 0.0)   # the level term alone (the bass-under term also pulls on level)
     monkeypatch.setattr(P, "LEVEL_WEIGHT", 0.0)
     free = fit_passive_at(w, z, 2851.0, 200.0, 1600.0, Topology())
     assert _fit_level(w, free, z) < target - P.LEVEL_SLACK_DB - 2.0   # without the term, level is thrown away
@@ -459,3 +460,61 @@ def test_no_level_term_without_woofer_data_in_its_band():
     assert woofer_level_db(w, Topology()) is None
     fit = fit_passive_at(w, _resistive(), 2851.0, 200.0, 1600.0, Topology())
     assert np.isfinite(fit.cost)
+
+
+def test_the_contour_is_a_resistor_with_an_inductor_across_it_before_the_l_pad():
+    t = Topology(lf_shelf=True, lf_notch=True)
+    parts = {p.name: p for p in build(_values(t), t, "passive")}
+    rc, lc, rs = parts["R_lc"], parts["L_lc"], parts["R_ls"]
+    assert (rc.a, rc.b) == (lc.a, lc.b) == ("ln", "lc") and rs.a == "lc"
+    assert lc.dcr == pytest.approx(inductor_dcr(lc.value, cored=False))
+    assert value_names(t, "passive").index("R_lc") == value_names(t, "passive").index("R_ln") + 1
+
+
+def test_the_contour_shelves_from_no_loss_to_the_resistive_loss():
+    """A pure R parallel L in series with an 8 ohm load: about 0 dB well below its corner R / (2 pi L), and the
+    loss 8 / (R + 8) well above it."""
+    from speaker.network import Part
+    r, ind = 10.0, 3.3e-3
+    parts = [Part("R_lc", "R", "in", "lc", r), Part("L_lc", "L", "in", "lc", ind), Part("coax_lf", "Z", "lc", "0", 1.0)]
+    f = np.array([5.0, 50000.0])
+    h, _ = transfers(parts, f, {"coax_lf": np.full(2, 8.0 + 0j)}, Topology())
+    db = 20 * np.log10(np.abs(h["coax_lf"]))
+    assert db[0] == pytest.approx(0.0, abs=0.05)
+    assert db[1] == pytest.approx(-20 * np.log10((r + 8) / 8), abs=0.05)
+
+
+def test_the_bass_sits_under_the_coax_lf_above_twice_its_point(monkeypatch):
+    """On equal omni ways flatness alone lets the bass run close to the coax LF well above fb; the bass-under term
+    pulls it down towards BASS_UNDER_DB under the coax LF over [2 fb, 600 Hz]."""
+    import speaker.passive as P
+    from speaker.passive import FIT_SMOOTH, _smoother
+    w, z, t = omni_ways(FIT_F), _resistive(), Topology()
+    sm, i = _smoother(FIT_F, FIT_SMOOTH), w.obs.at23_idx
+    m = (FIT_F >= 400.0) & (FIT_F <= 600.0)
+
+    def worst(fit):
+        h, _ = transfers(build(fit.values, t, "passive"), FIT_F, driver_loads(z(FIT_F), t), t)
+        b, c = (sm @ np.abs(h[k] * w.ways[k][:, i]) ** 2 for k in ("bass", "coax_lf"))
+        return float((10 * np.log10(b / c))[m].max())
+    monkeypatch.setattr(P, "LEAK_WEIGHT", 0.0)
+    free = worst(fit_passive_at(w, z, 2851.0, 200.0, 1600.0, t))
+    monkeypatch.undo()   # the module's LEAK_WEIGHT
+    held = worst(fit_passive_at(w, z, 2851.0, 200.0, 1600.0, t))
+    assert free > -P.BASS_UNDER_DB + 3.0 and held < free - 2.0 and held <= -P.BASS_UNDER_DB + 1.0
+
+
+def test_the_bass_under_term_skips_points_where_a_way_is_exactly_zero(monkeypatch):
+    """With the bass exactly zero from 2 fb up the term has nothing to count: the fit is the same with it off and
+    with it made severe."""
+    import speaker.passive as P
+    w, z = omni_ways(FIT_F), _resistive()
+    w.ways["bass"][FIT_F >= 400.0] = 0
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        monkeypatch.setattr(P, "LEAK_WEIGHT", 0.0)
+        off = fit_passive_at(w, z, 2851.0, 200.0, 1600.0, Topology())
+        monkeypatch.setattr(P, "LEAK_WEIGHT", 10.0)
+        monkeypatch.setattr(P, "BASS_UNDER_DB", 100.0)
+        severe = fit_passive_at(w, z, 2851.0, 200.0, 1600.0, Topology())
+    assert severe.values == off.values and severe.cost == pytest.approx(off.cost)

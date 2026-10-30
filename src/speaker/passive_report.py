@@ -197,10 +197,10 @@ def _polarity_text(t: Topology) -> str:
 
 
 def _options_text(t: Topology) -> str:
-    on = [OPTION_TEXT[k] for k, v in (("zobel", t.zobel), ("bass_order", t.bass_order == 3),
+    on = [OPTION_TEXT[k] for k, v in (("lf_shelf", t.lf_shelf), ("zobel", t.zobel), ("bass_order", t.bass_order == 3),
                                       ("lf_order", t.lf_order == 3), ("lf_notch", t.lf_notch),
                                       ("hf_shunt", t.hf_shunt)) if v]
-    return ", ".join(on) if on else "none (2nd-order bass and coax LF, no Zobel, notch or shunt)"
+    return ", ".join(on) if on else "none (2nd-order bass and coax LF, no contour, Zobel, notch or shunt)"
 
 
 def _table(head: list[str], rows: list[list[str]]) -> list[str]:

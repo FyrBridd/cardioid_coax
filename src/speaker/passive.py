@@ -33,6 +33,7 @@ class Topology:
     zobel: bool = False
     lf_order: int = 2  # 2 or 3
     lf_notch: bool = False
+    lf_shelf: bool = False  # the coax LF contour: R_lc with L_lc across it, in series before the L-pad
     hf_shunt: bool = False
     bass_inverted: bool = False
     hf_inverted: bool = False
@@ -51,12 +52,14 @@ def value_names(topo: Topology, mode: Mode) -> list[str]:
         names += ["C_h1", "L_h1"]
     names += ["R_ls", "R_lp", "L_l1", "C_l1"] + (["L_l2"] if topo.lf_order == 3 else [])
     names += ["L_ln", "C_ln", "R_ln"] if topo.lf_notch else []
+    names += ["R_lc", "L_lc"] if topo.lf_shelf else []
     names += ["C_t1", "L_t1", "C_t2", "R_ts", "R_tp"]
     names += ["R_tr", "L_tr", "C_tr"] if topo.hf_shunt else []
     return names
 
 
-_ALL = value_names(Topology(bass_order=3, zobel=True, lf_order=3, lf_notch=True, hf_shunt=True), "passive")
+_ALL = value_names(Topology(bass_order=3, zobel=True, lf_order=3, lf_notch=True, lf_shelf=True, hf_shunt=True),
+                   "passive")
 BOUNDS: dict[str, tuple[float, float]] = {
     n: ((0.5, 100.0) if n in ("R_lp", "R_tp") else _PREFIX_BOUNDS[n[0]]) for n in _ALL}
 
@@ -92,7 +95,9 @@ def build(values: dict[str, float], topo: Topology, mode: Mode) -> list[Part]:
     else:
         cx = "in"
 
-    # Coax LF: low-pass, notch, then the L-pad next to the driver.
+    # Coax LF: low-pass, notch, contour, then the L-pad next to the driver. The contour (a resistor with an inductor
+    # across it) sits just before the L-pad, whose input stays near the driver's |Z|: a steady load, so its shelf
+    # depth and corner move little with the driver's impedance, and the low-pass ahead still sees it as a load.
     ind("L_l1", cx, "l1")
     c("C_l1", "l1", "0")
     end = "l1"
@@ -104,6 +109,10 @@ def build(values: dict[str, float], topo: Topology, mode: Mode) -> list[Part]:
         c("C_ln", end, "ln")
         r("R_ln", end, "ln")
         end = "ln"
+    if topo.lf_shelf:
+        r("R_lc", end, "lc")
+        ind("L_lc", end, "lc")
+        end = "lc"
     r("R_ls", end, "lp")
     r("R_lp", "lp", "0")
     parts.append(Part("coax_lf", "Z", "lp", "0", 1.0))
@@ -155,9 +164,14 @@ SHUNT_Q_MAX = 2.0  # the HF's RLC shunt, sqrt(L/C)/R
 Z_PENALTY = 10.0  # residual per ohm under the floor, at each Z_GRID point
 Q_PENALTY = 10.0  # residual per unit of shunt Q over SHUNT_Q_MAX
 CROSS_WEIGHT = 3.0  # residual per dB between the two ways' 23° levels at their crossover point
+BASS_UNDER_DB = 10.0  # dB, how far the bass must sit under the coax LF at 23° from 2 fb to BASS_UNDER_TOP
+BASS_UNDER_TOP = 600.0  # Hz, top of the band the cardioid coax section must own (main spec §2 item 4)
+LEAK_WEIGHT = 3.0  # residual per dB the bass sits less than BASS_UNDER_DB under the coax LF, at each point
 LEVEL_WEIGHT = 3.0  # residual per dB the fitted level sits under the woofers' own level less LEVEL_SLACK_DB
 LEVEL_SLACK_DB = 1.0  # dB, how far under the woofers' own level the fit may go free
 NOTCH_HZ = 2700.0  # Hz, the coax LF cone breakup
+SHELF_DB = 7.5  # dB, the coax LF contour's starting cut above its corner (the LF is ~9 dB down at 150 Hz)
+SHELF_CORNER = 1.5  # the contour's starting corner, times fb
 SHUNT_HZ = float(np.sqrt(2000.0 * 3300.0))  # Hz, centre of the coax HF's 2-3.3 kHz hump
 _EDGE = 1e-6  # keeps start values strictly inside the bounds (log scale)
 _LSQ_TOL = 1e-4  # least_squares ftol and xtol: finer log-value steps are lost in the ~20 % snap to standard values
@@ -208,7 +222,13 @@ def start_values(topo: Topology, fb: float, fh: float, z_at: dict[str, np.ndarra
         v.update(L_l1=1.5 * rl / wh, C_l1=4 / 3 / (wh * rl), L_l2=0.5 * rl / wh)
     else:
         v.update(L_l1=np.sqrt(2) * rl / wh, C_l1=1 / (np.sqrt(2) * wh * rl))
-    v["R_ls"], v["R_lp"] = _l_pad(rl, pad.get("coax_lf", 0.0))
+    lf_pad = pad.get("coax_lf", 0.0)
+    if topo.lf_shelf:  # SHELF_DB of the coax LF's pad moves into the contour, its corner at SHELF_CORNER x fb
+        rc = _mag(z_at, "coax_lf", 2 * fb)
+        v.update(R_lc=rc * (10 ** (SHELF_DB / 20) - 1))
+        v.update(L_lc=v["R_lc"] / (2 * np.pi * SHELF_CORNER * fb))
+        lf_pad = max(lf_pad - SHELF_DB, 0.0)
+    v["R_ls"], v["R_lp"] = _l_pad(rl, lf_pad)
     wn, rn = 2 * np.pi * NOTCH_HZ, _mag(z_at, "coax_lf", NOTCH_HZ)
     v.update(L_ln=rn / wn, C_ln=1 / (wn * rn), R_ln=rn)  # tank reactance = the load at resonance, 6 dB deep
     v.update(C_t1=2 / 3 / (wh * rt), L_t1=0.75 * rt / wh, C_t2=2 / (wh * rt))
@@ -275,7 +295,11 @@ def fit_passive_at(ways: Ways, z: Callable[[np.ndarray], dict[str, np.ndarray]],
     free), weighted 1 on [FIT_LO, tl] and ABOVE_WEIGHT on (tl, FIT_TOP], 0 where the sum is exactly 0. To it are
     appended: LEVEL_WEIGHT times the dB the level (that weighted mean) sits under woofer_level_db less
     LEVEL_SLACK_DB, which stops the fit buying flatness or the floor with level (a lossy pad, a high-impedance bass
-    branch); CROSS_WEIGHT times the dB between the bass and the coax LF (smoothed alike, at 23°) at fb, and
+    branch); LEAK_WEIGHT per dB (times the point's weight) that the bass sits less than BASS_UNDER_DB under the coax
+    LF over [2 fb, BASS_UNDER_TOP] (each smoothed alike, at 23°; points where either way is exactly zero skipped),
+    which keeps the non-cardioid woofers out of the band the cardioid coax section must own (flatness alone lets
+    the bass fill the coax LF's low-end droop there); CROSS_WEIGHT times the dB between the bass and the coax LF
+    (smoothed alike, at 23°) at fb, and
     between the coax LF and HF at fh, which holds the crossovers at the points (flatness alone does not: on
     flat ways the sections can stagger anywhere and still sum flat); Z_PENALTY per ohm of |z_in| under z_floor
     at each Z_GRID point; and, with the RLC shunt, Q_PENALTY per unit of its Q over SHUNT_Q_MAX.
@@ -298,6 +322,8 @@ def fit_passive_at(ways: Ways, z: Callable[[np.ndarray], dict[str, np.ndarray]],
         raise ValueError(f"no frequencies between {FIT_LO:g} and {max(tl, FIT_TOP):g} Hz to fit on")
     sm = _smoother(f, FIT_SMOOTH)
     target = _woofer_level(f, resp["bass"], sm)
+    under = np.flatnonzero((f >= 2 * fb) & (f <= BASS_UNDER_TOP) & (np.abs(resp["bass"]) > 0)
+                           & (np.abs(resp["coax_lf"]) > 0) & (band > 0))
     # the two grid points either side of each crossover point, and its log-f position between them
     cross = []
     for a, b, fc in (("bass", "coax_lf", fb), ("coax_lf", "coax_hf", fh)):
@@ -316,6 +342,10 @@ def fit_passive_at(ways: Ways, z: Callable[[np.ndarray], dict[str, np.ndarray]],
         r = w * (db - level)
         # no level term when the woofers have no level to anchor to (no points in their band, or exactly zero)
         lv = [] if target is None else [LEVEL_WEIGHT * max(0.0, target - LEVEL_SLACK_DB - level)]
+        pb, pc = sm[under] @ np.abs(each["bass"]) ** 2, sm[under] @ np.abs(each["coax_lf"]) ** 2
+        ok = (pb > 0) & (pc > 0)
+        gap = np.where(ok, 10 * np.log10(np.where(ok, pb, 1.0) / np.where(ok, pc, 1.0)) + BASS_UNDER_DB, 0.0)
+        bu = LEAK_WEIGHT * band[under] * np.maximum(0.0, gap)
         xr = np.zeros(2)
         for n, (a, b, js, t) in enumerate(cross):
             pa, pb = sm[js] @ np.abs(each[a]) ** 2, sm[js] @ np.abs(each[b]) ** 2
@@ -326,7 +356,7 @@ def fit_passive_at(ways: Ways, z: Callable[[np.ndarray], dict[str, np.ndarray]],
         pen = [Z_PENALTY * np.maximum(0.0, z_floor - zm)]
         if topo.hf_shunt:
             pen.append([Q_PENALTY * max(0.0, np.sqrt(v["L_tr"] / v["C_tr"]) / v["R_tr"] - SHUNT_Q_MAX)])
-        return np.concatenate([r, xr, lv, *pen]), float(zm.min())
+        return np.concatenate([r, xr, lv, bu, *pen]), float(zm.min())
 
     lo = np.log([BOUNDS[n][0] for n in names])
     hi = np.log([BOUNDS[n][1] for n in names])
@@ -357,8 +387,9 @@ def fit_passive_at(ways: Ways, z: Callable[[np.ndarray], dict[str, np.ndarray]],
     return PassiveFit(fb, fh, topo, vals, continuous, z_floor, z_min, z_min >= z_floor, cost)
 
 
-OPTIONS = ("zobel", "bass_order", "lf_order", "lf_notch", "hf_shunt")  # tried in this order; an order "on" is 3
-OPTION_TEXT = {"zobel": "the Zobel across the woofers", "bass_order": "a 3rd-order bass low-pass",
+OPTIONS = ("lf_shelf", "zobel", "bass_order", "lf_order", "lf_notch", "hf_shunt")  # in this order; an order "on" is 3
+OPTION_TEXT = {"lf_shelf": "the coax LF contour (R_lc with L_lc across it)",
+               "zobel": "the Zobel across the woofers", "bass_order": "a 3rd-order bass low-pass",
                "lf_order": "a 3rd-order coax LF low-pass", "lf_notch": f"the coax LF notch at {NOTCH_HZ:g} Hz",
                "hf_shunt": "the RLC shunt across the coax HF"}
 OPTION_GAIN_DB = 0.1  # dB, the least trusted flat23 improvement that keeps an option

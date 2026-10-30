@@ -89,7 +89,8 @@ def monopole_puck(
 # Hand-written values for every name `speaker.passive.value_names` can return (all options on), inside BOUNDS.
 SAMPLE = {"L_b1": 6.5e-3, "C_b1": 100e-6, "L_b2": 2.0e-3, "R_bz": 6.8, "C_bz": 47e-6,
           "C_h1": 100e-6, "L_h1": 8.0e-3, "R_ls": 1.5, "R_lp": 15.0, "L_l1": 1.0e-3, "C_l1": 8.2e-6,
-          "L_l2": 0.5e-3, "L_ln": 0.3e-3, "C_ln": 10e-6, "R_ln": 4.7, "C_t1": 10e-6, "L_t1": 0.6e-3,
+          "L_l2": 0.5e-3, "L_ln": 0.3e-3, "C_ln": 10e-6, "R_ln": 4.7, "R_lc": 10.0, "L_lc": 3.3e-3,
+          "C_t1": 10e-6, "L_t1": 0.6e-3,
           "C_t2": 15e-6, "R_ts": 4.7, "R_tp": 3.3, "R_tr": 6.8, "L_tr": 0.4e-3, "C_tr": 4.7e-6}
 
 
