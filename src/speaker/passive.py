@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Literal
 
 import numpy as np
@@ -376,6 +376,9 @@ class Tolerance:
     flat23_p95: float  # dB, 95th percentile of the draws
     whole_rear: tuple[float, float]  # dB, 5th and 95th percentile of the draws
     passed: bool  # z_min >= TOL_Z_MIN and flat23_p95 <= flat23_nominal + TOL_FLAT_DB
+    # each draw's min |z_in| (ohm) and trusted flat23 (dB, nan where not trusted), for the report's plot
+    draws_z_min: tuple[float, ...] = field(default=(), compare=False, repr=False)
+    draws_flat23: tuple[float, ...] = field(default=(), compare=False, repr=False)
 
 
 def tolerance(ways: Ways, z: Callable[[np.ndarray], dict[str, np.ndarray]], tl: float, fit: PassiveFit,
@@ -410,7 +413,7 @@ def tolerance(ways: Ways, z: Callable[[np.ndarray], dict[str, np.ndarray]], tl: 
     z_min, p95 = float(zs.min()), float(np.percentile(flat, 95))
     passed = z_min >= TOL_Z_MIN and math.isfinite(flat0) and math.isfinite(p95) and p95 <= flat0 + TOL_FLAT_DB
     return Tolerance(z_min, flat0, p95, (float(np.percentile(rear, 5)), float(np.percentile(rear, 95))),
-                     bool(passed))
+                     bool(passed), tuple(float(x) for x in zs), tuple(float(x) for x in flat))
 
 
 @dataclass(frozen=True)

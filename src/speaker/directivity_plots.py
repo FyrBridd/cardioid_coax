@@ -8,6 +8,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
+from matplotlib.ticker import MaxNLocator  # noqa: E402
 
 from .curves import smooth  # noqa: E402
 from .report import FB_AIM_BAND, FB_AIM_DB, FB_BAND, FB_TARGET_DB, _save  # noqa: E402
@@ -141,7 +142,8 @@ def lf_reference(path: Path, f: np.ndarray, raw_db: np.ndarray, fs: np.ndarray, 
 
 
 def crossover_23(path: Path, f: np.ndarray, curves: dict[str, np.ndarray], tl: float, tl_text: str,
-                 blend: tuple[float, float] | None = None) -> None:
+                 blend: tuple[float, float] | None = None,
+                 title: str = "Each way at 23° after its crossover filter, and the sum") -> None:
     """Each way's level at 23° after its crossover filter, and the sum (the "sum" curve), 1/6-octave smoothed."""
     fig, ax = plt.subplots(figsize=(9, 5.5))
     sm = {}
@@ -156,5 +158,66 @@ def crossover_23(path: Path, f: np.ndarray, curves: dict[str, np.ndarray], tl: f
     ax.set_ylabel("dB SPL at 2 m, 2.83 V, 23°")
     _freq_axis(ax, f, tl, tl_text, blend)
     ax.legend(loc="lower left", fontsize=8)
-    ax.set_title("Each way at 23° after its crossover filter, and the sum")
+    ax.set_title(title)
+    _save(fig, path)
+
+
+def impedance(path: Path, f: np.ndarray, curves: dict[str, np.ndarray], floor: float, floor_text: str,
+              dashed: tuple[str, ...] = ()) -> None:
+    """|Z| (ohm) of each labelled curve against frequency, with the minimum-impedance line at floor; the curves
+    named in dashed are drawn dashed (for reference, not what the amplifier sees in the main mode)."""
+    fig, ax = plt.subplots(figsize=(9, 5))
+    top = 0.0
+    for name, z in curves.items():
+        ax.plot(f, z, lw=1.2 if name in dashed else 2, ls="--" if name in dashed else "-", label=name)
+        top = max(top, float(np.nanmax(z)))
+    ax.axhline(floor, color="C3", lw=1.5, ls=":", label=floor_text)
+    ax.set_ylim(0, min(max(top * 1.1, 2 * floor), 60.0))
+    _freq_axis(ax, f, np.inf, "")
+    ax.set_ylabel("|Z| (Ω)")
+    ax.set_title("Impedance the amplifier sees (modelled, nominal part values)")
+    ax.legend(loc="upper left", fontsize=8)
+    _save(fig, path)
+
+
+def whole_rear_compare(path: Path, f: np.ndarray, rej: dict[str, np.ndarray], fc: dict[str, float]) -> None:
+    """Whole-speaker L(0°) - L(180°) of several crossovers on one axis; fc: each one's bass-to-coax point (Hz)."""
+    fig, ax = plt.subplots(figsize=(11, 4.5))
+    ax.axvspan(*FB_BAND, color="C1", alpha=0.12, label="150-300 Hz")
+    for i, (name, y) in enumerate(rej.items()):
+        ax.plot(f, y, color=f"C{i}", lw=1.8, label=name)
+        if name in fc:
+            ax.axvline(fc[name], color=f"C{i}", ls=":", lw=1, label=f"{name}: bass-coax {fc[name]:g} Hz")
+    _freq_axis(ax, f, np.inf, "")
+    ax.set_ylabel("L(0°) - L(180°) (dB)")
+    ax.set_title("Whole-speaker rear rejection by crossover (info only: the bass drivers radiate both ways)")
+    ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1.0), fontsize=8)
+    _save(fig, path)
+
+
+def tolerance_spread(path: Path, flat23: np.ndarray, flat23_nominal: float, flat23_p95: float, flat_limit_db: float,
+                     z_min: np.ndarray, z_limit: float) -> None:
+    """The part-tolerance draws: a histogram of flat23 (with the nominal value, the 95th percentile and the limit
+    for it), and each draw's minimum |Z| (with the lowest allowed)."""
+    fig, (a1, a2) = plt.subplots(1, 2, figsize=(11, 4.2))
+    ok = np.isfinite(flat23)
+    a1.hist(flat23[ok], bins=20, color="C0", alpha=0.8)
+    a1.axvline(flat23_nominal, color="k", lw=1.5, label=f"nominal values {flat23_nominal:.2f} dB")
+    a1.axvline(flat23_p95, color="C1", ls="--", lw=1.5, label=f"95th percentile {flat23_p95:.2f} dB")
+    a1.axvline(flat23_nominal + flat_limit_db, color="C3", ls=":", lw=1.5,
+               label=f"limit for the 95th percentile (+{flat_limit_db:g} dB)")
+    a1.set_xlabel("flat23 (dB, lower is flatter)")
+    a1.set_ylabel("draws")
+    a1.yaxis.set_major_locator(MaxNLocator(integer=True))
+    a1.set_title(f"23° flatness over {ok.sum()} draws")
+    a1.legend(loc="upper right", fontsize=8)
+    a2.plot(np.arange(1, len(z_min) + 1), z_min, "o", ms=3, color="C0")
+    a2.axhline(z_limit, color="C3", ls=":", lw=1.5, label=f"lowest allowed {z_limit:g} Ω")
+    a2.set_xlabel("draw")
+    a2.set_ylabel("minimum |Z| (Ω)")
+    a2.set_ylim(min(z_limit, float(np.min(z_min))) - 0.3, float(np.max(z_min)) + 0.3)
+    a2.set_title("Minimum impedance of each draw")
+    a2.legend(loc="lower right", fontsize=8)
+    for a in (a1, a2):
+        a.grid(True, alpha=0.3)
     _save(fig, path)

@@ -92,13 +92,15 @@ def _datasheet_fallback() -> dict[str, float]:
 
 def responses(d: Design, cab: SourceField, puck: SourceField | None, f: np.ndarray, tl: float,
               xo: FixedCrossover | None, lf_recess: tuple[np.ndarray, np.ndarray] | None = None,
+              ways: Ways | None = None,
               ) -> tuple[Ways, np.ndarray, dict[str, float], Spin, FixedCrossover | ActiveCrossover]:
     """Ways, the crossed-over total, the way gains, the spinorama of d on the grid f and the crossover used.
 
     xo None: the active crossover fitted to the ways (fit_active, LF-HF no lower than the coax's hf_xo_min),
-    whose gains are returned.
+    whose gains are returned. ways: way_responses of these arguments when the caller already has them.
     """
-    ways = way_responses(d.p, d.coax, d.bass, d.layout, cab, puck, f, trusted_limit=tl, lf_recess=lf_recess)
+    if ways is None:
+        ways = way_responses(d.p, d.coax, d.bass, d.layout, cab, puck, f, trusted_limit=tl, lf_recess=lf_recess)
     if xo is None:
         used: FixedCrossover | ActiveCrossover = fit_active(
             ways, tl, fallback_db=_datasheet_fallback(), lf_hf_min=d.coax.hf_xo_min)

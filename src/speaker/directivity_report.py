@@ -38,7 +38,8 @@ from .params import Params
 from .report import FB_AIM_BAND, FB_BAND
 from .scores import LW_RING, REAR_H, ROLL_ANGLES, Score, score_all
 from .spinorama import P_REF_PEAK
-from .system import BLEND_MIN_OCT, PUCK_HOLD_F, V_DRIVE, coax_section, recess_db, vent_scaled_section
+from .system import (BLEND_MIN_OCT, PUCK_HOLD_F, V_DRIVE, Ways, coax_section, recess_db, vent_scaled_section,
+                     way_responses)
 from .vituixcad import export_vituixcad
 from .xo_fit import AT_LIMIT, BIQUAD_TOL_DB, EXPORT_FS, at_limit, biquad_advice, crossover_text, passive_warnings
 
@@ -256,6 +257,59 @@ def _trusted_limit(mc: dict | None, *, cab_top: float, f_top: float, puck_lo: fl
     return tl, f"{tl:.0f} Hz{note}"
 
 
+@dataclasses.dataclass
+class DesignWays:
+    """A design's fields and ways on a run's grid, with the trusted limit they are read to."""
+    d: Design
+    f: np.ndarray
+    ways: Ways
+    tl: float
+    tl_text: str
+    cab: SourceField
+    puck: SourceField | None
+    rec: tuple[np.ndarray, np.ndarray] | None
+    mc: dict | None = None  # the usable mesh check, if any
+    mc_why: str = ""  # why there is none
+
+
+def design_ways(params_path: Path | None, *, trusted_limit: tuple[float, str] | None, out_dir: Path | None = None,
+                fast: bool = False, f_max_3d: float = 4000.0, per_wavelength: float = 6.0) -> DesignWays:
+    """The design at params_path, its BEM fields (cabinet, and unless fast the puck and the recess ratio; cached
+    per band), the trusted limit and the ways (speaker.system.way_responses) on the full or fast grid.
+
+    trusted_limit (Hz, note) replaces the mesh check's limit and its header text; without it, out_dir's
+    mesh_check.json is used when it was made for this run (_usable_mesh_check), else UNVERIFIED_LIMIT. The limit
+    is capped to leave room for the cabinet-to-puck blend (_trusted_limit).
+    """
+    d = load_design(params_path)
+    mc_path = None if out_dir is None else Path(out_dir) / "mesh_check.json"
+    h_max = FAST_H_MAX if fast else CAB_H_MAX
+    if trusted_limit is None:
+        mc, mc_why = _usable_mesh_check(json.loads(mc_path.read_text()) if mc_path and mc_path.exists() else None,
+                                        d, h_max=h_max, per_wavelength=per_wavelength)
+    else:
+        mc, mc_why = None, ""
+    f = grid(*(FAST_GRID if fast else FULL_GRID))
+    f_cab = f if fast else f[f <= f_max_3d]
+    fp = None
+    if not fast:  # the puck's grid points, ending on the hold frequency when the grid goes past it
+        fp = f[(f >= PUCK_F_RANGE[0]) & (f <= PUCK_F_RANGE[1])]
+        if f[-1] > PUCK_HOLD_F:
+            fp = np.union1d(fp, [PUCK_HOLD_F])
+    tl, tl_text = _trusted_limit(mc, cab_top=float(f_cab[-1]), f_top=float(f[-1]),
+                                 puck_lo=None if fp is None else float(fp[0]), given=trusted_limit)
+    kw = dict(per_wavelength=per_wavelength, cache_dir=CACHE_DIR)
+    cab = banded(lambda x: cabinet_field(d.p, d.coax, d.bass, x, h_max=h_max, **kw), f_cab, "cabinet")
+    puck = None if fp is None else banded(lambda x: puck_field(d.p, d.coax, x, **kw), fp, "puck")
+    rec = None
+    if not fast:
+        t1 = time.perf_counter()
+        rec = recess_ratio(d.coax, cache_dir=CACHE_DIR)
+        print(f"recess ratio: {len(rec[0])} frequencies, {time.perf_counter() - t1:.1f} s", file=sys.stderr, flush=True)
+    ways = way_responses(d.p, d.coax, d.bass, d.layout, cab, puck, f, trusted_limit=tl, lf_recess=rec)
+    return DesignWays(d, f, ways, tl, tl_text, cab, puck, rec, mc, mc_why)
+
+
 def run_directivity(params_path: Path | None, out_dir: Path, *, fast: bool = False,
                     f_max_3d: float = 4000.0, per_wavelength: float = 6.0,
                     trusted_limit: tuple[float, str] | None = None) -> Path:
@@ -269,34 +323,14 @@ def run_directivity(params_path: Path | None, out_dir: Path, *, fast: bool = Fal
     trusted_limit (Hz, note) replaces the mesh check's limit and its header text; it is still capped
     to leave room for the cabinet-to-puck blend (_trusted_limit).
     """
-    d = load_design(params_path)
     out_dir = Path(out_dir)
-    mc_path = out_dir / "mesh_check.json"
-    h_max = FAST_H_MAX if fast else CAB_H_MAX
-    if trusted_limit is None:
-        mc, mc_why = _usable_mesh_check(json.loads(mc_path.read_text()) if mc_path.exists() else None, d,
-                                        h_max=h_max, per_wavelength=per_wavelength)
-    else:
-        mc, mc_why = None, ""
-    f = grid(*(FAST_GRID if fast else FULL_GRID))
-    f_cab = f if fast else f[f <= f_max_3d]
-    fp = None
-    if not fast:  # the puck's grid points, ending on the hold frequency when the grid goes past it
-        fp = f[(f >= PUCK_F_RANGE[0]) & (f <= PUCK_F_RANGE[1])]
-        if f[-1] > PUCK_HOLD_F:
-            fp = np.union1d(fp, [PUCK_HOLD_F])
-    tl, tl_text = _trusted_limit(mc, cab_top=float(f_cab[-1]), f_top=float(f[-1]),
-                                 puck_lo=None if fp is None else float(fp[0]), given=trusted_limit)
-    kw = dict(per_wavelength=per_wavelength, cache_dir=CACHE_DIR)
     t0 = time.perf_counter()
-    cab = banded(lambda x: cabinet_field(d.p, d.coax, d.bass, x, h_max=h_max, **kw), f_cab, "cabinet")
-    puck = None if fp is None else banded(lambda x: puck_field(d.p, d.coax, x, **kw), fp, "puck")
-    rec = None
-    if not fast:
-        t1 = time.perf_counter()
-        rec = recess_ratio(d.coax, cache_dir=CACHE_DIR)
-        print(f"recess ratio: {len(rec[0])} frequencies, {time.perf_counter() - t1:.1f} s", file=sys.stderr, flush=True)
-    ways, total, gains, spin, xo = responses(d, cab, puck, f, tl, FixedCrossover() if fast else None, lf_recess=rec)
+    dw = design_ways(params_path, trusted_limit=trusted_limit, out_dir=out_dir, fast=fast, f_max_3d=f_max_3d,
+                     per_wavelength=per_wavelength)
+    d, f, tl, tl_text, cab, puck, rec, mc, mc_why = (dw.d, dw.f, dw.tl, dw.tl_text, dw.cab, dw.puck, dw.rec, dw.mc,
+                                                      dw.mc_why)
+    ways, total, gains, spin, xo = responses(d, cab, puck, f, tl, FixedCrossover() if fast else None, lf_recess=rec,
+                                             ways=dw.ways)
     obs, sec = ways.obs, coax_section(ways)
     blend, far = ways.meta["puck_blend"], ways.meta["coax_far_h0_h180"]
     scores = ways_scores(f, ways, total, spin, tl)
