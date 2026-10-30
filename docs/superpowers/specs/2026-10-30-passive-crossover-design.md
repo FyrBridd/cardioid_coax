@@ -125,7 +125,9 @@ parts the active modes don't use.
   - coax gain, delay and up to 4 PEQs (amended 2026-10-30 during implementation, after the real-data
     preview; the owner has not yet reviewed this change). The first version had coax gain only, since its
     EQ is in the passive network, but that left the coax LF's cardioid-chamber droop below about 300 Hz
-    unfilled (preview: semi-active flat23 3.09 dB against active 1.16 dB), and a DSP can EQ it.
+    unfilled, and a DSP can EQ it. With the coax PEQs, the final round 3d run gives semi-active flat23
+    2.05 dB against active 1.16 dB (passive 1.75 dB); its 150 Hz coax PEQ sits at the +12 dB limit, and
+    the four coax PEQs together peak at 9.2 dB at 139 Hz (`docs/rounds/round-3d.md`).
   
   The DSP can delay the bass, so semi-active should recover most of the active rear rejection. The
   report shows how much.
