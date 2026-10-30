@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import warnings
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -236,6 +237,8 @@ def test_search_falls_back_to_series_woofers_when_no_parallel_network_clears_the
     assert res.series is not None and res.series.fit.topo.bass_wiring == "series"
     assert res.series.series is None
     assert any("series" in n for n in res.notes)
+    # the parallel network misses its floor already, so the floor is not raised for it
+    assert res.fit.z_floor == 3.5 and not any(n.startswith("Raised") for n in res.notes)
 
 
 def test_tolerance_is_deterministic():
@@ -302,3 +305,55 @@ def test_passive_scores_are_score_all_on_the_passive_total():
     want = score_all(w.f, total, w.ways["coax_lf"], w.obs, spinorama(total, w.obs, f=w.f), trusted_limit=2851.0)
     got = passive_scores(w, fit, z, 2851.0)
     assert [(s.key, s.confidence, s.value) for s in got] == [(s.key, s.confidence, s.value) for s in want]
+
+
+def _one_point_search(monkeypatch, tolerances):
+    """A one-pair search on flat 8 ohm ways, the tolerance check replaced by `tolerances` in turn (the last
+    repeats); returns the floors fit_passive_at was called with."""
+    import speaker.passive as P
+    monkeypatch.setattr(P, "BASS_COAX_GRID", (170.0,))
+    monkeypatch.setattr(P, "LF_HF_GRID", (1600.0,))
+    queue = list(tolerances)
+
+    def fake_tolerance(*a, **k):
+        return queue.pop(0) if len(queue) > 1 else queue[0]
+    floors = []
+    real = P.fit_passive_at
+
+    def spy(*a, **k):
+        floors.append(a[6] if len(a) > 6 else k.get("z_floor", 3.5))
+        return real(*a, **k)
+    monkeypatch.setattr(P, "tolerance", fake_tolerance)
+    monkeypatch.setattr(P, "fit_passive_at", spy)
+    return floors
+
+
+def test_a_raised_floor_the_refit_cannot_meet_keeps_the_last_network_that_met_its_floor(monkeypatch):
+    import speaker.passive as P
+    failed = P.Tolerance(3.2, 0.5, 0.7, (0.0, 0.0), False)
+    floors = _one_point_search(monkeypatch, [failed])
+    real = P.fit_passive_at
+
+    def missing_raised_floors(*a, **k):
+        fit = real(*a, **k)
+        return replace(fit, z_ok=False, z_min=fit.z_floor - 0.05) if fit.z_floor > 3.5 else fit
+    monkeypatch.setattr(P, "fit_passive_at", missing_raised_floors)
+    res = P.search_passive(omni_ways(FIT_F), _resistive(), 2851.0, lf_hf_min=None)
+    assert res.fit.z_floor == 3.5 and res.fit.z_ok
+    assert res.tolerance is failed
+    assert res.series is None  # it clears 3.5 ohm: no fallback for a missed raised floor
+    assert any("still fails" in n and "3.20 Ω" in n and "+0.20 dB" in n for n in res.notes)
+    assert not any(n.startswith("Raised") for n in res.notes)
+    assert max(floors) == pytest.approx(3.6)  # one refit at 3.6 ohm missed it; 3.7 was never tried
+
+
+def test_the_floor_is_raised_while_the_tolerance_check_fails_and_the_refit_meets_it(monkeypatch):
+    import speaker.passive as P
+    failed = P.Tolerance(3.2, 0.5, 0.7, (0.0, 0.0), False)
+    passed = P.Tolerance(3.4, 0.5, 0.6, (0.0, 0.0), True)
+    floors = _one_point_search(monkeypatch, [failed, passed])
+    res = P.search_passive(omni_ways(FIT_F), _resistive(), 2851.0, lf_hf_min=None)
+    assert res.fit.z_floor == pytest.approx(3.6) and res.fit.z_ok and res.tolerance is passed
+    assert floors[-1] == pytest.approx(3.6) and max(floors) == pytest.approx(3.6)
+    assert res.series is None
+    assert any(n.startswith("Raised the impedance floor to 3.6 Ω") for n in res.notes)

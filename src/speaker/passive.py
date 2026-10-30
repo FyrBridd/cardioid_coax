@@ -494,19 +494,33 @@ def _search(ways: Ways, z: Callable[[np.ndarray], dict[str, np.ndarray]], tl: fl
             fit, v = new, nv
 
     tol = tolerance(ways, z, tl, fit, n=TOL_DRAWS, spread=TOL_SPREAD, seed=TOL_SEED)
-    while not tol.passed and fit.z_floor < FLOOR_MAX - 1e-9:
+    stop = ""  # why the floor stopped rising, for the note
+    while not tol.passed:
+        if not fit.z_ok:
+            stop = ", which the network already misses, so it was not raised"
+            break
+        if fit.z_floor >= FLOOR_MAX - 1e-9:
+            stop = ", the highest tried"
+            break
         floor = round(fit.z_floor + FLOOR_STEP, 6)
+        new = fit_passive_at(ways, z, tl, fit.bass_coax, fit.lf_hf, fit.topo, floor)
+        if not new.z_ok:
+            stop = (f"; a refit at {floor:g} Ω reaches only {new.z_min:.2f} Ω, so the {fit.z_floor:g} Ω "
+                    f"network is kept")
+            break
         notes.append(f"Raised the impedance floor to {floor:g} Ω: the tolerance check failed at "
                      f"{fit.z_floor:g} Ω ({_tolerance_why(tol)}).")
-        fit = fit_passive_at(ways, z, tl, fit.bass_coax, fit.lf_hf, fit.topo, floor)
+        fit = new
         tol = tolerance(ways, z, tl, fit, n=TOL_DRAWS, spread=TOL_SPREAD, seed=TOL_SEED)
     if tol.passed:
         notes.append(f"The tolerance check passes at the {fit.z_floor:g} Ω floor: worst draw {tol.z_min:.2f} Ω, "
                      f"flat23 {tol.flat23_nominal:.2f} dB nominal and {tol.flat23_p95:.2f} dB at the 95th "
                      f"percentile.")
     else:
-        notes.append(f"The tolerance check still fails at the {fit.z_floor:g} Ω floor, the highest tried "
-                     f"({_tolerance_why(tol)}).")
+        notes.append(f"The tolerance check still fails at the {fit.z_floor:g} Ω floor{stop}: worst draw "
+                     f"{tol.z_min:.2f} Ω (limit {TOL_Z_MIN:g} Ω), flat23 "
+                     f"{tol.flat23_p95 - tol.flat23_nominal:+.2f} dB at the 95th percentile on the nominal "
+                     f"{tol.flat23_nominal:.2f} dB (limit +{TOL_FLAT_DB:g} dB).")
     return PassiveResult(fit, tol, None, notes)
 
 
@@ -514,20 +528,21 @@ def search_passive(ways: Ways, z: Callable[[np.ndarray], dict[str, np.ndarray]],
                    lf_hf_min: float | None, z_floor: float = 3.5) -> PassiveResult:
     """The passive network: (1) at every grid pair (LF_HF_GRID floored at lf_hf_min) the lowest-cost polarity
     pair, scored by passive_scores, the points chosen with xo_fit.pick; (2) at those points, each of OPTIONS
-    in turn, kept when _option_verdict allows and the floor still holds; (3) while the tolerance check fails
-    and the floor is under FLOOR_MAX, a refit at the same points and topology with the floor FLOOR_STEP
-    higher; (4) if the final fit is not z_ok, steps 1-3 again with the woofers in series, attached as
-    `series`. Each step leaves a sentence in notes."""
+    in turn, kept when _option_verdict allows and the floor still holds; (3) while the tolerance check fails,
+    the network meets its floor and the floor is under FLOOR_MAX, a refit at the same points and topology with
+    the floor FLOOR_STEP higher, stopping (and keeping the last network that met its floor, with its tolerance
+    result) at a refit that misses the raised floor; (4) if the final network's z_min is under z_floor (never
+    for a missed raised floor), steps 1-3 again with the woofers in series, attached as `series`. Each step
+    leaves a sentence in notes."""
     lf_hf = [fh for fh in LF_HF_GRID if lf_hf_min is None or fh >= lf_hf_min]
     if not lf_hf:
         raise ValueError(f"no LF-HF grid point is at or above the driver's {lf_hf_min:g} Hz; "
                          f"the grid stops at {LF_HF_GRID[-1]:g} Hz")
     res = _search(ways, z, tl, lf_hf, Topology(), z_floor)
-    if res.fit.z_ok:
+    if res.fit.z_min >= z_floor:
         return res
     series = _search(ways, z, tl, lf_hf, Topology(bass_wiring="series"), z_floor)
-    raised = f", raised from {z_floor:g} Ω by the tolerance check" if res.fit.z_floor != z_floor else ""
-    tail = "" if series.fit.z_ok else f", though it does not clear its {series.fit.z_floor:g} Ω floor either"
-    note = (f"No parallel-woofer network clears the {res.fit.z_floor:g} Ω floor{raised} (its lowest is "
-            f"{res.fit.z_min:.2f} Ω); the woofers-in-series alternative is attached{tail}.")
+    tail = "" if series.fit.z_min >= z_floor else f", though it does not clear {z_floor:g} Ω either"
+    note = (f"No parallel-woofer network clears {z_floor:g} Ω (its lowest is {res.fit.z_min:.2f} Ω); "
+            f"the woofers-in-series alternative is attached{tail}.")
     return replace(res, series=series, notes=[*res.notes, note])
