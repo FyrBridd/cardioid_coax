@@ -58,6 +58,27 @@ def test_network_text_shows_floor_flatness_links_and_both_networks(monkeypatch):
     assert "Chose 200 Hz" in text and "tolerance" in text.lower()
     for p in build(res.fit.values, res.fit.topo, "passive"):
         assert p.name in text
+    # semi-active: one netlist, the parallel network's, fed at cx; the series block only points to it
+    assert text.count("-- Semi-active mode (") == 1 and "cx (COAX)-l1" in text
+    series_block = text.split("== Alternative: the woofers in series")[1]
+    pointer = "Semi-active mode uses the parallel network's coax boards; semi_active.txt is fitted to those."
+    assert pointer in series_block
+    assert "cx (COAX)" not in series_block
+
+
+def test_network_text_states_the_sensitivity(monkeypatch):
+    import speaker.passive_report as pr
+    from speaker.evaluate import load_design
+    monkeypatch.setattr(pr, "impedances", lambda d, f: _resistive(f))
+    w = omni_ways(np.geomspace(50.0, 16000.0, 150))
+    res = _result(z_ok=False, series=_result(Topology(bass_wiring="series")))
+    text = pr.network_text(res, load_design(None), TL, ways=w, active_total=w.ways["coax_lf"])
+    lines = [x for x in text.splitlines() if "Sensitivity" in x]
+    assert len(lines) == 3   # active, parallel, series
+    assert all("dB at 2 m for 2.83 V" in x and "what the woofers alone give" in x for x in lines)
+    # the active total here is one way at the woofers' level: 0.0 dB below them
+    assert "0.0 dB below what the woofers alone give (woofers in parallel)" in lines[0]
+    assert "woofers in series" in lines[2]
 
 
 def test_network_text_flags_a_value_at_a_search_limit(monkeypatch):
@@ -96,6 +117,12 @@ def test_parts_csv_lists_a_pair_with_types_and_ratings(monkeypatch):
     assert par["L_b1"]["value"] == "6.5" and par["L_b1"]["unit"] == "mH"
     assert par["C_b1"]["value"] == "100" and par["C_b1"]["unit"] == "uF"
     assert par["R_ls"]["value"] == "1.5" and par["R_ls"]["unit"] == "ohm"
+    # the series alternative is rated in passive mode only (semi-active uses the parallel boards)
+    d = load_design(None)
+    passive_only = pr.power_ratings(build(series.fit.values, series.fit.topo, "passive"),
+                                    pr.driver_loads(_resistive(pr.Z_GRID), series.fit.topo), pr.Z_GRID,
+                                    d.p.drive.amp_v_rms)
+    assert all(int(ser[n]["rating_w"]) == passive_only[n][2] for n in passive_only)
 
 
 def test_vituixcad_netlist_is_in_build_order_with_inverted_drivers_swapped():
@@ -167,10 +194,11 @@ def test_run_passive_writes_every_output(tmp_path, monkeypatch):
     assert set(scores) == {"passive", "semi_active", "active"}
     assert all(any(s["key"] == "flat23" and s["confidence"] == "trusted" for s in v) for v in scores.values())
     assert "3.5" in (tmp_path / "network.txt").read_text()
+    assert (tmp_path / "network.txt").read_text().count("what the woofers alone give") == 2   # active, parallel
     page = out.read_text()
     for s in ("Where passive falls short of active", "Tolerance", "bare woofer", "schematic_bass.svg",
               "links.svg", "plots/impedance.png", "plots/whole_rear_compare.png", "semi_active.txt",
-              "Passive", "Semi-active", "Active", "8.00 Ω"):
+              "Passive", "Semi-active", "Active", "8.00 Ω", "Passive behind active", "dB at 2 m for 2.83 V"):
         assert s in page, s
     assert "series" not in (tmp_path / "parts.csv").read_text().split("\n", 1)[1]
 

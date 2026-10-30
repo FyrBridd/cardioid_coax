@@ -426,3 +426,36 @@ def test_an_option_that_lifts_the_network_over_the_floor_is_kept_whatever_flat23
     res = search_passive(omni_ways(FIT_F), _resistive(), 2851.0, lf_hf_min=None)
     assert res.fit.topo.zobel and res.fit.z_ok and res.series is None
     assert any(n.startswith("Kept the Zobel") and "3.5 Ω" in n for n in res.notes)
+
+
+def _fit_level(w, fit, z, tl=2851.0):
+    """The level fit_passive_at anchors: the weighted mean of the smoothed 23° dB over [FIT_LO, tl] (and
+    ABOVE_WEIGHT above it, to FIT_TOP)."""
+    from speaker.passive import ABOVE_WEIGHT, FIT_LO, FIT_SMOOTH, FIT_TOP, _smoother
+    t = passive_total(w, fit, z)[:, w.obs.at23_idx]
+    db = 10 * np.log10(_smoother(w.f, FIT_SMOOTH) @ np.abs(t) ** 2)
+    wt = np.where((w.f >= FIT_LO) & (w.f <= tl), 1.0, np.where((w.f > tl) & (w.f <= FIT_TOP), ABOVE_WEIGHT, 0.0))
+    return float(np.sum(wt * db) / np.sum(wt))
+
+
+def test_fit_holds_the_level_near_the_woofers_own(monkeypatch):
+    """On equal omni ways the coax L-pads can throw level away for free (the level is otherwise not fitted); the
+    level term keeps the sum within LEVEL_SLACK_DB (and a small margin) of the woofers' own level."""
+    import speaker.passive as P
+    w, z = omni_ways(FIT_F), _resistive()
+    target = P.woofer_level_db(w, Topology())
+    assert target == pytest.approx(0.0, abs=0.01)
+    monkeypatch.setattr(P, "LEVEL_WEIGHT", 0.0)
+    free = fit_passive_at(w, z, 2851.0, 200.0, 1600.0, Topology())
+    assert _fit_level(w, free, z) < target - P.LEVEL_SLACK_DB - 2.0   # without the term, level is thrown away
+    monkeypatch.setattr(P, "LEVEL_WEIGHT", 3.0)
+    held = fit_passive_at(w, z, 2851.0, 200.0, 1600.0, Topology())
+    assert _fit_level(w, held, z) >= target - P.LEVEL_SLACK_DB - 0.5
+
+
+def test_no_level_term_without_woofer_data_in_its_band():
+    from speaker.passive import woofer_level_db
+    w = omni_ways(np.geomspace(200, 16000, 120))   # no point in 80-150 Hz
+    assert woofer_level_db(w, Topology()) is None
+    fit = fit_passive_at(w, _resistive(), 2851.0, 200.0, 1600.0, Topology())
+    assert np.isfinite(fit.cost)

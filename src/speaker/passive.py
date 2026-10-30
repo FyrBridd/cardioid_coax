@@ -17,7 +17,7 @@ from typing import Literal
 import numpy as np
 from scipy.optimize import least_squares
 
-from speaker.crossover import match_gains
+from speaker.crossover import MATCH_BANDS, match_gains
 from speaker.network import Part, inductor_dcr, neighbours, snap, solve
 from speaker.scores import Score, score_all
 from speaker.spinorama import spinorama
@@ -155,6 +155,8 @@ SHUNT_Q_MAX = 2.0  # the HF's RLC shunt, sqrt(L/C)/R
 Z_PENALTY = 10.0  # residual per ohm under the floor, at each Z_GRID point
 Q_PENALTY = 10.0  # residual per unit of shunt Q over SHUNT_Q_MAX
 CROSS_WEIGHT = 3.0  # residual per dB between the two ways' 23° levels at their crossover point
+LEVEL_WEIGHT = 3.0  # residual per dB the fitted level sits under the woofers' own level less LEVEL_SLACK_DB
+LEVEL_SLACK_DB = 1.0  # dB, how far under the woofers' own level the fit may go free
 NOTCH_HZ = 2700.0  # Hz, the coax LF cone breakup
 SHUNT_HZ = float(np.sqrt(2000.0 * 3300.0))  # Hz, centre of the coax HF's 2-3.3 kHz hump
 _EDGE = 1e-6  # keeps start values strictly inside the bounds (log scale)
@@ -250,13 +252,30 @@ def _pads_db(ways: Ways, topo: Topology) -> dict[str, float]:
     return {k: level[k] - floor for k in ("coax_lf", "coax_hf")}
 
 
+def _woofer_level(f: np.ndarray, bass: np.ndarray, sm: np.ndarray) -> float | None:
+    """Mean over MATCH_BANDS["bass"] of the smoothed (sm) dB of the unfiltered bass way at 23° (bass, complex Pa on
+    f, bass_scale applied); None when the band holds no point where the way is non-zero."""
+    ps = sm @ np.abs(bass) ** 2
+    m = (f >= MATCH_BANDS["bass"][0]) & (f <= MATCH_BANDS["bass"][1]) & (ps > 0)
+    return float(np.mean(10 * np.log10(ps[m]))) if m.any() else None
+
+
+def woofer_level_db(ways: Ways, topo: Topology) -> float | None:
+    """The woofers' own level at 23° (dB re 1 Pa peak, FIT_SMOOTH-smoothed, mean over MATCH_BANDS["bass"],
+    wired as topo), the level fit_passive_at anchors to; None as _woofer_level."""
+    f = np.asarray(ways.f, dtype=float)
+    return _woofer_level(f, bass_scale(topo) * ways.ways["bass"][:, ways.obs.at23_idx], _smoother(f, FIT_SMOOTH))
+
+
 def fit_passive_at(ways: Ways, z: Callable[[np.ndarray], dict[str, np.ndarray]], tl: float, fb: float, fh: float,
                    topo: Topology, z_floor: float = 3.5) -> PassiveFit:
     """The passive network's values (passive mode, topo's options and polarity) at crossover points fb, fh.
 
     The residual is the FIT_SMOOTH-smoothed dB of the summed 23° response minus its weighted mean (the level is
     free), weighted 1 on [FIT_LO, tl] and ABOVE_WEIGHT on (tl, FIT_TOP], 0 where the sum is exactly 0. To it are
-    appended: CROSS_WEIGHT times the dB between the bass and the coax LF (smoothed alike, at 23°) at fb, and
+    appended: LEVEL_WEIGHT times the dB the level (that weighted mean) sits under woofer_level_db less
+    LEVEL_SLACK_DB, which stops the fit buying flatness or the floor with level (a lossy pad, a high-impedance bass
+    branch); CROSS_WEIGHT times the dB between the bass and the coax LF (smoothed alike, at 23°) at fb, and
     between the coax LF and HF at fh, which holds the crossovers at the points (flatness alone does not: on
     flat ways the sections can stagger anywhere and still sum flat); Z_PENALTY per ohm of |z_in| under z_floor
     at each Z_GRID point; and, with the RLC shunt, Q_PENALTY per unit of its Q over SHUNT_Q_MAX.
@@ -278,6 +297,7 @@ def fit_passive_at(ways: Ways, z: Callable[[np.ndarray], dict[str, np.ndarray]],
     if not band.any():
         raise ValueError(f"no frequencies between {FIT_LO:g} and {max(tl, FIT_TOP):g} Hz to fit on")
     sm = _smoother(f, FIT_SMOOTH)
+    target = _woofer_level(f, resp["bass"], sm)
     # the two grid points either side of each crossover point, and its log-f position between them
     cross = []
     for a, b, fc in (("bass", "coax_lf", fb), ("coax_lf", "coax_hf", fh)):
@@ -292,7 +312,10 @@ def fit_passive_at(ways: Ways, z: Callable[[np.ndarray], dict[str, np.ndarray]],
         ps = sm @ p
         w = np.where((p > 0) & (ps > 0), band, 0.0)
         db = 10 * np.log10(np.where(w > 0, ps, 1.0))
-        r = w * (db - np.sum(w * db) / max(np.sum(w), 1e-30))
+        level = np.sum(w * db) / max(np.sum(w), 1e-30)
+        r = w * (db - level)
+        # no level term when the woofers have no level to anchor to (no points in their band, or exactly zero)
+        lv = [] if target is None else [LEVEL_WEIGHT * max(0.0, target - LEVEL_SLACK_DB - level)]
         xr = np.zeros(2)
         for n, (a, b, js, t) in enumerate(cross):
             pa, pb = sm[js] @ np.abs(each[a]) ** 2, sm[js] @ np.abs(each[b]) ** 2
@@ -303,7 +326,7 @@ def fit_passive_at(ways: Ways, z: Callable[[np.ndarray], dict[str, np.ndarray]],
         pen = [Z_PENALTY * np.maximum(0.0, z_floor - zm)]
         if topo.hf_shunt:
             pen.append([Q_PENALTY * max(0.0, np.sqrt(v["L_tr"] / v["C_tr"]) / v["R_tr"] - SHUNT_Q_MAX)])
-        return np.concatenate([r, xr, *pen]), float(zm.min())
+        return np.concatenate([r, xr, lv, *pen]), float(zm.min())
 
     lo = np.log([BOUNDS[n][0] for n in names])
     hi = np.log([BOUNDS[n][1] for n in names])

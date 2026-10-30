@@ -27,12 +27,12 @@ from .evaluate import Design, _datasheet_fallback, ways_scores
 from .network import Part, solve
 from .passive import (
     BOUNDS, OPTION_TEXT, TOL_FLAT_DB, TOL_SPREAD, TOL_Z_MIN, Z_GRID, PassiveFit, PassiveResult, Topology,
-    bass_scale, build, driver_loads, passive_scores, passive_total, search_passive, transfers,
+    bass_scale, build, driver_loads, passive_scores, passive_total, search_passive, transfers, woofer_level_db,
 )
 from .schematic import LINK_TEXT, draw_links, draw_network, fmt_value, link_states
 from .scores import Score
 from .semi_active import _transfer, fit_semi_active, semi_active_text, semi_total, semi_ways
-from .spinorama import spinorama
+from .spinorama import P_REF_PEAK, spinorama
 from .system import Ways
 from .vituixcad import impedances
 from .xo_fit import fit_active, passive_warnings
@@ -43,8 +43,9 @@ TOLERANCE_TEXT = "5 %"
 ELECTROLYTIC_MIN = 30e-6  # F, bipolar electrolytics are allowed above this, outside the coax network
 SHORTFALL_DB = 0.25  # dB, a score difference at least this large is reported
 _BASS_NETWORK = ("L_b", "C_b", "R_bz")  # name prefixes of the bass low-pass and its Zobel
-# L-pad resistors at the end of their range where they barely act (a series one small, a parallel one large)
-_FADING = {("R_ls", "lower"), ("R_ts", "lower"), ("R_lp", "upper"), ("R_tp", "upper")}
+# parts at the end of their range where they barely act: L-pad resistors (a series one small, a parallel one
+# large) and the coax HF's second series capacitor (large: nearly a plain wire, the high-pass close to 2nd order)
+_FADING = {("R_ls", "lower"), ("R_ts", "lower"), ("R_lp", "upper"), ("R_tp", "upper"), ("C_t2", "upper")}
 # score keys where a higher value is better; for every other key lower is better
 HIGHER_BETTER = ("cardioid_hard", "cardioid_hard_far", "cardioid_aim", "rear_hemisphere", "whole_rear")
 MEANING = {
@@ -55,9 +56,9 @@ MEANING = {
     "di_smooth_bass": "the directivity changes less smoothly around the bass-to-coax crossover",
     "di_smooth_lfhf": "the directivity changes less smoothly around the coax LF-to-HF crossover",
     "rolloff_monotonic": "more bands get louder again further off-axis",
-    "whole_rear": "the whole speaker sends more sound backwards at 150-300 Hz (an active crossover can delay the "
-                  "bass to line it up with the cardioid coax; a passive network cannot)",
+    "whole_rear": "the whole speaker sends more sound backwards at 150-300 Hz",
 }
+SENS_BAND = (300.0, 1000.0)  # Hz, where the system sensitivity is taken
 MODES = {"passive": "Passive", "semi_active": "Semi-active", "active": "Active"}
 
 
@@ -120,17 +121,22 @@ def _loads(fit: PassiveFit, d: Design, f: np.ndarray) -> dict[str, np.ndarray]:
     return driver_loads(impedances(d, f), fit.topo)
 
 
-def _mode_ratings(fit: PassiveFit, d: Design) -> dict[str, dict[str, tuple[float, float, int]]]:
-    """power_ratings in passive and in semi-active mode (the coax channel at the same amp voltage), on Z_GRID."""
+BOTH_MODES = ("passive", "semi_active")
+
+
+def _mode_ratings(fit: PassiveFit, d: Design,
+                  modes: tuple[str, ...] = BOTH_MODES) -> dict[str, dict[str, tuple[float, float, int]]]:
+    """power_ratings in each mode (semi-active: the coax channel at the same amp voltage), on Z_GRID."""
     loads = _loads(fit, d, Z_GRID)
     v = d.p.drive.amp_v_rms
-    return {m: power_ratings(build(fit.values, fit.topo, m), loads, Z_GRID, v) for m in ("passive", "semi_active")}
+    return {m: power_ratings(build(fit.values, fit.topo, m), loads, Z_GRID, v) for m in modes}
 
 
-def _part_rows(fit: PassiveFit, d: Design) -> list[dict]:
+def _part_rows(fit: PassiveFit, d: Design, modes: tuple[str, ...] = BOTH_MODES) -> list[dict]:
     """One row per part of the passive netlist (build order, drivers left out), the resistor rating being the
-    larger of the two modes'."""
-    ratings = _mode_ratings(fit, d)
+    largest of the modes' (the series alternative is rated in passive mode only: semi-active uses the parallel
+    network's coax boards)."""
+    ratings = _mode_ratings(fit, d, modes)
     rows = []
     for p in build(fit.values, fit.topo, "passive"):
         if p.kind == "Z":
@@ -159,8 +165,8 @@ def bound_notes(fit: PassiveFit) -> list[str]:
             s += (": the network may be buying the impedance floor with bass loss; compare flat23 with the "
                   "active fit's.")
         elif (n, end) in _FADING:
-            s += ": the fit wanted less of it than the search allows; at this value the resistor barely acts, so "
-            s += "this costs little."
+            s += ": at this value the part barely acts (the fit wanted it further out of the way than the search "
+            s += "allows), so this costs little."
         else:
             s += ": the fit wanted to go further than the search allows, so the response near this part is a "
             s += "compromise."
@@ -222,9 +228,10 @@ def _netlist_table(fit: PassiveFit, d: Design, mode: str, rows: list[dict]) -> l
             continue
         r = by_name[p.name]
         m = r["modes"][mode] if p.kind == "R" else None
+        a = "cx (COAX)" if mode == "semi_active" and p.a == "in" else p.a  # semi-active: the amp is on COAX at cx
         out.append([p.name, fmt_value(p.kind, p.value), r["type"], TOLERANCE_TEXT,
                     f"{p.dcr:.2f} Ω" if p.kind == "L" else "-",
-                    f"{m[0]:.2f} W" if m else "-", f"{m[1]:.1f} W" if m else "-", f"{p.a}-{p.b}"])
+                    f"{m[0]:.2f} W" if m else "-", f"{m[1]:.1f} W" if m else "-", f"{a}-{p.b}"])
     return _table(["part", "value", "type", "tolerance", "DCR", "power at 1/3 V", "power at full V", "nodes"], out)
 
 
@@ -239,14 +246,17 @@ def _links_lines(t: Topology) -> list[str]:
     return out
 
 
-def _network_block(res: PassiveResult, d: Design, title: str) -> list[str]:
+def _network_block(res: PassiveResult, d: Design, title: str, *, semi: bool = True,
+                   sens: str | None = None) -> list[str]:
+    """One network's section of network.txt; semi False (the series alternative) replaces the semi-active netlist
+    with a pointer to the parallel network's boards. sens: the sensitivity sentence, when known."""
     fit, tol, t = res.fit, res.tolerance, res.fit.topo
     v = d.p.drive.amp_v_rms
     loads = _loads(fit, d, Z_GRID)
     z, zf = _z_min(build(fit.values, t, "passive"), loads, Z_GRID)
     zs, zsf = _z_min(build(fit.values, t, "semi_active"), loads, Z_GRID)
     zb = np.abs(loads["bass"])
-    rows = _part_rows(fit, d)
+    rows = _part_rows(fit, d, BOTH_MODES if semi else ("passive",))
     margin = z - Z_FLOOR
     out = [
         f"== {title}: {_wiring(t)} ==",
@@ -260,15 +270,20 @@ def _network_block(res: PassiveResult, d: Design, title: str) -> list[str]:
         f"{'passed' if tol.passed else 'FAILED'}; worst draw {tol.z_min:.2f} Ω (limit {TOL_Z_MIN:g} Ω); flat23 "
         f"{tol.flat23_nominal:.2f} dB nominal, {tol.flat23_p95:.2f} dB at the 95th percentile (limit "
         f"+{TOL_FLAT_DB:g} dB); whole_rear {tol.whole_rear[0]:.2f}-{tol.whole_rear[1]:.2f} dB (5th-95th percentile)",
+        *([sens] if sens else []),
     ]
     out += [f"WARNING: {s}" for s in bound_notes(fit)]
-    out += ["", f"-- Passive mode (one amp channel, {v:g} V rms, on IN) --", *_netlist_table(fit, d, "passive", rows),
-            "", f"-- Semi-active mode (the coax amp channel on COAX, {v:g} V rms assumed; C_h1 and L_h1 out of "
-                f"circuit; the bass channel drives the woofers directly) --",
-            f"coax channel minimum impedance {zs:.2f} Ω at {zsf:.0f} Hz; bass channel (bare {_wiring(t)}) "
-            f"{float(zb.min()):.2f} Ω at {float(Z_GRID[np.argmin(zb)]):.0f} Hz",
-            *_netlist_table(fit, d, "semi_active", rows),
-            "", "-- Fully active mode: no network parts in circuit (links K3, K4, K5 open) --",
+    out += ["", f"-- Passive mode (one amp channel, {v:g} V rms, on IN) --", *_netlist_table(fit, d, "passive", rows)]
+    if semi:
+        out += ["", f"-- Semi-active mode (the coax amp channel on COAX, node cx, {v:g} V rms assumed; C_h1 and "
+                    f"L_h1 out of circuit; the bass channel drives the woofers directly) --",
+                f"coax channel minimum impedance {zs:.2f} Ω at {zsf:.0f} Hz; bass channel (bare {_wiring(t)}) "
+                f"{float(zb.min()):.2f} Ω at {float(Z_GRID[np.argmin(zb)]):.0f} Hz",
+                *_netlist_table(fit, d, "semi_active", rows)]
+    else:
+        out += ["", "-- Semi-active mode --",
+                "Semi-active mode uses the parallel network's coax boards; semi_active.txt is fitted to those."]
+    out += ["", "-- Fully active mode: no network parts in circuit (links K3, K4, K5 open) --",
             "", "-- Links to fit for each mode --", *_links_lines(t),
             "", "-- How the search got here --", *(f"- {n}" for n in res.notes), ""]
     return out
@@ -297,16 +312,28 @@ def _header(d: Design, tl: float, what: str) -> list[str]:
     ]
 
 
-def network_text(result: PassiveResult, d: Design, tl: float) -> str:
+def network_text(result: PassiveResult, d: Design, tl: float, *, ways: Ways | None = None,
+                 active_total: np.ndarray | None = None) -> str:
     """The network sheet: per network (the chosen one, and the woofers-in-series alternative when attached), the
-    points, polarity, options, the floor used, the minimum impedance beside flat23, the tolerance result, any value
-    at a search limit, the netlist of each mode with type, tolerance, DCR and power, the links per mode and the
-    search notes."""
+    points, polarity, options, the floor used, the minimum impedance beside flat23, the tolerance result, the
+    sensitivity (with ways), any value at a search limit, the netlist of each mode with type, tolerance, DCR and
+    power, the links per mode and the search notes. active_total (with ways): the active crossover's total, whose
+    sensitivity is given for comparison."""
     out = _header(d, tl, "Passive crossover network")
+    sens = {}
+    if ways is not None:
+        def z(x: np.ndarray) -> dict[str, np.ndarray]:
+            return impedances(d, x)
+        for r in [result, *([result.series] if result.series is not None else [])]:
+            sens[r.fit.topo.bass_wiring] = sensitivity_text(ways, passive_total(ways, r.fit, z), r.fit.topo)
+        if active_total is not None:
+            out += [f"# active crossover, for comparison: {sensitivity_text(ways, active_total, Topology())}", ""]
     out += _network_block(result, d, "Chosen network" if result.series is None else
-                          f"Network with the woofers in parallel (does not clear {Z_FLOOR:g} Ω)")
+                          f"Network with the woofers in parallel (does not clear {Z_FLOOR:g} Ω)",
+                          sens=sens.get(result.fit.topo.bass_wiring))
     if result.series is not None:
-        out += _network_block(result.series, d, "Alternative: the woofers in series")
+        out += _network_block(result.series, d, "Alternative: the woofers in series", semi=False,
+                              sens=sens.get(result.series.fit.topo.bass_wiring))
     return "\n".join(out)
 
 
@@ -314,8 +341,8 @@ def parts_csv(result: PassiveResult, d: Design) -> str:
     """The parts for a pair of speakers: part, value, unit, type, tolerance, DCR (ohm, inductors), rating (W,
     resistors), quantity, and the network (parallel or series woofers) it belongs to."""
     lines = ["part,value,unit,type,tolerance,dcr_ohm,rating_w,qty_pair,network"]
-    for res in [result, *([result.series] if result.series is not None else [])]:
-        for r in _part_rows(res.fit, d):
+    for res, modes in [(result, BOTH_MODES), *([(result.series, ("passive",))] if result.series is not None else [])]:
+        for r in _part_rows(res.fit, d, modes):
             p = r["part"]
             lines.append(",".join([p.name, r["value"], r["unit"], r["type"], TOLERANCE_TEXT,
                                    f"{p.dcr:.3f}" if p.kind == "L" else "", str(r["rating"] or ""), "2",
@@ -357,6 +384,26 @@ def vituixcad_netlist(result: PassiveResult) -> str:
 
 # ---------------------------------------------------------------- report
 
+def sensitivity(ways: Ways, total: np.ndarray) -> float:
+    """Mean dB SPL at 23° (2 m, 2.83 V on the input) of total over SENS_BAND."""
+    m = (ways.f >= SENS_BAND[0]) & (ways.f <= SENS_BAND[1])
+    return float(np.mean(_spl(total[m, ways.obs.at23_idx])))
+
+
+def sensitivity_text(ways: Ways, total: np.ndarray, topo: Topology) -> str:
+    """One sentence: the sensitivity of total and how far it sits below the woofers' own level (wired as topo),
+    the level the passive fit anchors to (before its LEVEL_SLACK_DB)."""
+    s = sensitivity(ways, total)
+    out = f"Sensitivity {s:.1f} dB at 2 m for 2.83 V (23°, {SENS_BAND[0]:g}-{SENS_BAND[1]:g} Hz)"
+    w = woofer_level_db(ways, topo)
+    if w is None:
+        return out + "."
+    gap = round(float(w - 20 * np.log10(P_REF_PEAK) - s), 1) + 0.0  # + 0.0: no "-0.0"
+    where = f"{gap:.1f} dB below" if gap >= 0 else f"{-gap:.1f} dB above"
+    return out + f", {where} what the woofers alone give ({_wiring(topo)})."
+
+
+
 def _trusted(scores: list[Score]) -> dict[str, Score]:
     return {s.key: s for s in scores if s.confidence == "trusted" and math.isfinite(s.value)}
 
@@ -376,7 +423,9 @@ def shortfalls(worse: list[Score], ref: list[Score], name: str, ref_name: str) -
         u = "" if s.unit == "count" else f" {s.unit}"
         out.append(f"{s.label} ({k}): {name} {s.value:.2f}{u} against {ref_name} {b[k].value:.2f}{u}, "
                    f"{gap:.2f}{u} worse ({better} is better)"
-                   + (f": {MEANING[k]}." if k in MEANING else "."))
+                   + (f": {MEANING[k]}" if k in MEANING else "")
+                   + (" (an active crossover can delay the bass to line it up with the cardioid coax; a passive "
+                      "network cannot)" if k == "whole_rear" and name == "passive" else "") + ".")
     return out
 
 
@@ -404,10 +453,11 @@ def _score_table(cols: dict[str, list[Score]]) -> str:
             s = tr[m].get(k)
             cells.append(f'<td class="num {e(s.status)}">{s.value:.2f}</td>' if s else "<td>-</td>")
         p, a = tr["passive"].get(k), tr["active"].get(k)
-        cells.append(f'<td class="num">{p.value - a.value:+.2f}</td>' if p and a else "<td>-</td>")
+        behind = (a.value - p.value if k in HIGHER_BETTER else p.value - a.value) if p and a else None
+        cells.append(f'<td class="num">{behind:+.2f}</td>' if behind is not None else "<td>-</td>")
         rows.append(_row(cells))
     head = "".join(f"<th>{e(MODES.get(m, m))}</th>" for m in cols)
-    return (f"<table><tr><th>Score</th><th>Unit</th>{head}<th>Passive − active</th></tr>" + "".join(rows)
+    return (f"<table><tr><th>Score</th><th>Unit</th>{head}<th>Passive behind active</th></tr>" + "".join(rows)
             + "</table>")
 
 
@@ -437,8 +487,9 @@ def _links_html(t: Topology) -> str:
             + "</ul>")
 
 
-def _summary(res: PassiveResult, d: Design, label: str) -> str:
-    """One network's key facts as an HTML list: points, polarity, options, z_min beside flat23, tolerance."""
+def _summary(res: PassiveResult, d: Design, label: str, sens: str | None = None) -> str:
+    """One network's key facts as an HTML list: points, polarity, options, z_min beside flat23, tolerance, and the
+    sensitivity sentence when given."""
     e = html.escape
     fit, tol, t = res.fit, res.tolerance, res.fit.topo
     z, zf = _z_min(build(fit.values, t, "passive"), _loads(fit, d, Z_GRID), Z_GRID)
@@ -454,6 +505,7 @@ def _summary(res: PassiveResult, d: Design, label: str) -> str:
         f'Part tolerance: <span class="{"pass" if tol.passed else "fail"}">'
         f"{'passed' if tol.passed else 'failed'}</span> (worst draw {tol.z_min:.2f} Ω; flat23 "
         f"{tol.flat23_p95:.2f} dB at the 95th percentile).",
+        *([e(sens)] if sens else []),
     ]
     items += [f'<span class="warn">{e(s)}</span>' for s in bound_notes(fit)]
     return "<ul>" + "".join(f"<li>{i}</li>" for i in items) + "</ul>"
@@ -521,11 +573,15 @@ def run_passive(params_path: Path | None, out_dir: Path, *, trusted_limit: tuple
     scores = {"passive": passive_scores(ways, fit, z, tl), "semi_active": scores_of(totals["semi_active"]),
               "active": scores_of(totals["active"])}
     series_scores = None if res.series is None else passive_scores(ways, res.series.fit, z, tl)
+    sens = {"passive": sensitivity_text(ways, totals["passive"], t),
+            "active": sensitivity_text(ways, totals["active"], Topology())}
+    if res.series is not None:
+        sens["series"] = sensitivity_text(ways, passive_total(ways, res.series.fit, z), res.series.fit.topo)
 
     _log("passive: writing outputs")
     out_dir.mkdir(parents=True, exist_ok=True)
     sha = _params_sha(d)
-    (out_dir / "network.txt").write_text(network_text(res, d, tl))
+    (out_dir / "network.txt").write_text(network_text(res, d, tl, ways=ways, active_total=totals["active"]))
     (out_dir / "parts.csv").write_text(parts_csv(res, d))
     (out_dir / "semi_active.txt").write_text(semi_active_text(sa, tl, design=d.path.name, sha=sha[:8]))
     (out_dir / "vituixcad_netlist.txt").write_text(vituixcad_netlist(res))
@@ -585,7 +641,8 @@ def run_passive(params_path: Path | None, out_dir: Path, *, trusted_limit: tuple
                            np.array(tol.draws_z_min), TOL_Z_MIN)
 
     zb = np.abs(loads["bass"])
-    page = _html(d, res=res, sa=sa, xo=xo, scores=scores, series_scores=series_scores, tl=tl, tl_text=tl_text,
+    page = _html(d, res=res, sa=sa, xo=xo, scores=scores, series_scores=series_scores, sens=sens, tl=tl,
+                 tl_text=tl_text,
                  schem=schem, bass_min=(float(zb.min()), float(Z_GRID[np.argmin(zb)])),
                  wall=time.perf_counter() - t0)
     path = out_dir / "report.html"
@@ -594,7 +651,7 @@ def run_passive(params_path: Path | None, out_dir: Path, *, trusted_limit: tuple
     return path
 
 
-def _html(d: Design, *, res: PassiveResult, sa, xo, scores: dict[str, list[Score]],
+def _html(d: Design, *, res: PassiveResult, sa, xo, scores: dict[str, list[Score]], sens: dict[str, str],
           series_scores: list[Score] | None, tl: float, tl_text: str, schem: dict[str, tuple[str, str]],
           bass_min: tuple[float, float], wall: float) -> str:
     e = html.escape
@@ -630,7 +687,7 @@ def _html(d: Design, *, res: PassiveResult, sa, xo, scores: dict[str, list[Score
             "network with the two woofers wired in series is given too. In series the pair is four times the "
             "impedance but 6 dB quieter, so the coax is padded down further and the speaker plays about 6 dB less "
             "loud. You choose.</p>"
-            + _summary(sr, d, "Series alternative")
+            + _summary(sr, d, "Series alternative", sens.get("series"))
             + "<p>The semi-active results above use the parallel network's coax boards; the series alternative's "
               "coax boards differ (more padding).</p>"
             + (_score_table({"passive": series_scores, "active": scores["active"]}) if series_scores else "")
@@ -648,19 +705,21 @@ def _html(d: Design, *, res: PassiveResult, sa, xo, scores: dict[str, list[Score
         "can be compared directly.</p>",
         "<table class='meta'>" + "".join(_row([f"<td>{k}</td>", f"<td>{v}</td>"]) for k, v in head) + "</table>",
         "<h2>Summary</h2>",
-        _summary(res, d, "Passive network"),
+        _summary(res, d, "Passive network", sens["passive"]),
         f"<p><b>Semi-active</b>: DSP split at {sa.bass_coax:g} Hz ahead of the same coax boards. "
-        f"<b>Active</b> (for comparison): {xo.bass_coax:g} Hz and {xo.lf_hf:g} Hz.</p>",
+        f"<b>Active</b> (for comparison): {xo.bass_coax:g} Hz and {xo.lf_hf:g} Hz. {e(sens['active'])}</p>",
         (f'<p class="warn">The woofers-in-parallel network does not clear {Z_FLOOR:g} Ω; see the series fallback '
          "below.</p>" if res.series is not None else ""),
         "<h2>Scores</h2>",
         "<p>Trusted scores only (up to the trusted limit); every score, low-confidence ones included, is in "
-        "scores.json. Lower is better unless marked.</p>",
+        "scores.json. Lower is better unless marked. 'Passive behind active': how much worse passive is "
+        "(positive = passive worse, negative = passive better), whichever direction is better for the score.</p>",
         _score_table(scores),
         "<h2>Where passive falls short of active</h2>",
-        ul(short, f"Passive is within {SHORTFALL_DB:g} dB of active on every trusted score."),
+        ul(short, f"No trusted score is {SHORTFALL_DB:g} dB (or one band, for the count) or more behind active."),
         "<h3>Semi-active against active</h3>",
-        ul(short_semi, f"Semi-active is within {SHORTFALL_DB:g} dB of active on every trusted score."),
+        ul(short_semi, f"No trusted semi-active score is {SHORTFALL_DB:g} dB (or one band, for the count) or more "
+                       "behind active."),
         "<h3>What the active crossover does that a passive network cannot copy</h3>",
         ul(warns, "Nothing: the active fit asks for nothing a passive network cannot supply."),
         "<h2>Impedance</h2>",
