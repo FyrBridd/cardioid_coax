@@ -110,7 +110,9 @@ class _Net:
         for m, grp in self.groups(n, came):
             if not self.reach(m, n) and m not in seen:
                 chains += [grp[:1] + rest for rest in self.legs(m, n, seen)]
-        return chains
+        # a driver hangs last, behind its link: every other leg at its node (Zobel, compensator, L-pad, shunt) is
+        # on the network side
+        return sorted(chains, key=lambda c: c[0].kind == "Z")
 
     def forks(self, n: str, came: str | None) -> list[tuple[str, list[Part]]]:
         return [(m, g) for m, g in self.groups(n, came) if self.reach(m, n)]
@@ -169,7 +171,11 @@ def _draw_row(d: schemdraw.Drawing, net: _Net, n: str, came: str | None, x: floa
             d += elm.Dot().at((x, y))
             d += elm.Label().at((x - 0.35, y + 0.45)).label(n, fontsize=13, color="blue")
         for j, chain in enumerate(legs):
-            if j:
+            link = DRIVER_LINK.get(chain[0].name) if chain[0].kind == "Z" else None
+            if j and link:  # the driver's two-pole link, between the network's legs and the driver
+                d += (elm.Switch().at((x + (j - 1) * STEP, y)).to((x + j * STEP, y))
+                      .label(f"{link} (2-pole)", loc="top", ofst=0.15))
+            elif j:
                 d += elm.Line().at((x + (j - 1) * STEP, y)).to((x + j * STEP, y))
             d += elm.Dot().at((x + j * STEP, y))
             _draw_leg(d, x + j * STEP, y, chain, inverted)
@@ -212,6 +218,8 @@ def draw_network(parts: list[Part], title: str, path: Path, inverted: set[str] |
 
 
 LINK_POLES = {"K1": 1, "K2": 1, "K3": 2, "K4": 2, "K5": 2}
+DRIVER_LINK = {"bass": "K3", "coax_lf": "K4", "coax_hf": "K5"}  # the two-pole link between each network and driver
+LINK_WRAP = 140  # characters per line of a link's sentence in links.svg
 LINK_TEXT = {
     "K1": "one-pole, between IN + (node in) and C_h1, the input of the coax high-pass",
     "K2": "one-pole, in series with L_h1 (between L_h1 and node 0)",
@@ -310,8 +318,11 @@ def draw_links(topo: Topology, path: Path) -> Path:
         y0 -= n * line + 0.02
         ax.plot([0.02, 0.98], [y0 + 0.01, y0 + 0.01], color="0.7", lw=0.8)
     ax.text(0.02, y0 - 0.02, "Links (removable):", fontsize=11, fontweight="bold", va="center")
-    for j, (k, t) in enumerate(LINK_TEXT.items()):
-        ax.text(0.02, y0 - 0.055 - j * 0.032, f"{k}: {t}", fontsize=10, va="center")
+    y = y0 - 0.045
+    for k, t in LINK_TEXT.items():
+        lines = textwrap.wrap(f"{k}: {t}", LINK_WRAP, subsequent_indent="      ")
+        ax.text(0.02, y, "\n".join(lines), fontsize=10, va="top", linespacing=1.35)
+        y -= len(lines) * 0.0215 + 0.008
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with matplotlib.rc_context({"svg.fonttype": "none"}):

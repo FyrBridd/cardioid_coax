@@ -545,9 +545,12 @@ def fit_passive_at(ways: Ways, z: Callable[[np.ndarray], dict[str, np.ndarray]],
     return PassiveFit(fb, fh, topo, vals, continuous, z_floor, z_min, z_min >= z_floor, cost)
 
 
-# in this order; an order "on" is 3. The compensator goes first, so the bass low-pass can be a proper 2nd-order
-# section from then on instead of resonating with the woofers' box peak.
-OPTIONS = ("bass_comp", "lf_shelf", "zobel", "bass_order", "lf_order", "lf_notch", "hf_shunt")
+# Options the grid settles: every grid pair is fitted without and with each, so the crossover points are chosen
+# knowing it. The compensator changes what the bass low-pass can be (a proper 2nd-order section instead of one that
+# resonates with the woofers' box peak), and with it the points the guards allow.
+GRID_OPTIONS = ("bass_comp",)
+# Options tried one by one on the grid's pick, in this order; an order "on" is 3.
+OPTIONS = ("lf_shelf", "zobel", "bass_order", "lf_order", "lf_notch", "hf_shunt")
 OPTION_TEXT = {"bass_comp": "an impedance-peak compensator across the woofers",
                "lf_shelf": "the coax LF contour (R_lc with L_lc across it)",
                "zobel": "the Zobel across the woofers", "bass_order": "a 3rd-order bass low-pass",
@@ -661,19 +664,22 @@ def _polarity(t: Topology) -> str:
 
 def _grid(ways: Ways, z: Callable[[np.ndarray], dict[str, np.ndarray]], tl: float, lf_hf: list[float],
           base: Topology, z_floor: float) -> tuple[PassiveFit, dict[str, float], int, bool]:
-    """At every grid pair, the best of the four polarity pairs by (shortfall under the floor, cost), the key
-    fit_passive_at's own descent uses; pick among those with every trusted SEARCH_KEYS score (grid order,
-    bass_coax outer, lf_hf inner), only the z_ok ones when there are any. Returns the fit, its scores, the
-    candidate count and whether any candidate was z_ok."""
+    """At every grid pair and for base alone and base with each of GRID_OPTIONS, the best of the four polarity
+    pairs by (shortfall under the floor, cost), the key fit_passive_at's own descent uses; pick among all those with
+    every trusted SEARCH_KEYS score (grid order, bass_coax outer, lf_hf inner, base first at each pair), only the
+    z_ok ones when there are any. Returns the fit, its scores, the candidate count and whether any candidate was
+    z_ok."""
+    topos = [base, *(replace(base, **{o: True}) for o in GRID_OPTIONS)]
     cands = []
     for fb in BASS_COAX_GRID:
         for fh in lf_hf:
-            fit = min((fit_passive_at(ways, z, tl, fb, fh, replace(base, bass_inverted=bi, hf_inverted=hi), z_floor)
-                       for bi in (False, True) for hi in (False, True)),
-                      key=lambda x: (max(0.0, x.z_floor - x.z_min), x.cost))
-            v = _trusted(passive_scores(ways, fit, z, tl))
-            if len(v) == len(SEARCH_KEYS):
-                cands.append(((fit, v), v))
+            for top in topos:
+                fit = min((fit_passive_at(ways, z, tl, fb, fh, replace(top, bass_inverted=bi, hf_inverted=hi),
+                                          z_floor) for bi in (False, True) for hi in (False, True)),
+                          key=lambda x: (max(0.0, x.z_floor - x.z_min), x.cost))
+                v = _trusted(passive_scores(ways, fit, z, tl))
+                if len(v) == len(SEARCH_KEYS):
+                    cands.append(((fit, v), v))
     if not cands:
         raise ValueError(f"no passive crossover candidate has all {len(SEARCH_KEYS)} trusted search scores")
     ok = [c for c in cands if c[0][0].z_ok]
@@ -695,8 +701,10 @@ def _search(ways: Ways, z: Callable[[np.ndarray], dict[str, np.ndarray]], tl: fl
             base: Topology, z_floor: float) -> tuple[PassiveResult, bool]:
     """Steps 1-3 of search_passive for one bass wiring, and whether any grid candidate cleared the floor."""
     fit, v, count, any_ok = _grid(ways, z, tl, lf_hf, base, z_floor)
-    notes = [f"Chose {fit.bass_coax:g} Hz bass to coax and {fit.lf_hf:g} Hz coax LF to HF from {count} grid pairs, "
-             f"woofers in {base.bass_wiring} ({_polarity(fit.topo)}): flat23 {v['flat23']:.2f} dB, "
+    grid = "; ".join(f"{'with' if getattr(fit.topo, o) else 'without'} {OPTION_TEXT[o]}" for o in GRID_OPTIONS)
+    notes = [f"Chose {fit.bass_coax:g} Hz bass to coax and {fit.lf_hf:g} Hz coax LF to HF from {count} grid "
+             f"candidates (each pair fitted with and without {', '.join(OPTION_TEXT[o] for o in GRID_OPTIONS)}), "
+             f"woofers in {base.bass_wiring} ({_polarity(fit.topo)}), {grid}: flat23 {v['flat23']:.2f} dB, "
              f"whole_rear {v['whole_rear']:.2f} dB."]
 
     for opt in OPTIONS:
@@ -759,7 +767,8 @@ def search_passive(ways: Ways, z: Callable[[np.ndarray], dict[str, np.ndarray]],
                    lf_hf_min: float | None, z_floor: float = 3.5) -> PassiveResult:
     """The passive network: (1) at every grid pair (LF_HF_GRID floored at lf_hf_min) the polarity pair with the
     least shortfall under the floor, then the lowest cost, scored by passive_scores, the points chosen with
-    xo_fit.pick (among the z_ok candidates when there are any); (2) at those points, each of OPTIONS in turn,
+    xo_fit.pick (among the z_ok candidates when there are any), each pair fitted without and with each of
+    GRID_OPTIONS, so the pick also settles those; (2) at those points, each of OPTIONS in turn,
     kept when it lifts a network that misses the floor over it, or when _option_verdict allows and the floor
     still holds (and, for a network already under the floor, the option does not lower its z_min further); (3)
     while the tolerance check fails,

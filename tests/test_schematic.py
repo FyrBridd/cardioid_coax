@@ -152,3 +152,32 @@ def test_the_compensator_is_one_three_part_leg_across_the_woofers(tmp_path):
     for n in ("R_bc", "L_bc", "C_bc"):
         assert _flat(n) in text
     assert "compensator" in LINK_TEXT["K3"]
+
+
+def test_the_woofers_hang_after_the_compensator_and_zobel_behind_k3(tmp_path):
+    """The network's legs come first at a driver's node, then the driver behind its link (K3 for the woofers):
+    the compensator and the Zobel are on the network side, so they drop out with the network in the active modes."""
+    from speaker.schematic import DRIVER_LINK, _Net
+    t = Topology(zobel=True, bass_comp=True)
+    parts = [p for p in build(dict(SAMPLE), t, "passive")
+             if p.name.startswith(("L_b", "C_b", "R_b")) or p.name == "bass"]
+    legs = [[p.name for p in c] for c in _Net(parts).legs("b1", "in")]
+    assert legs[-1] == ["bass"] and legs.index(["R_bz", "C_bz"]) < len(legs) - 1
+    assert DRIVER_LINK == {"bass": "K3", "coax_lf": "K4", "coax_hf": "K5"}
+    assert "K3" in _text(draw_network(parts, "Bass", tmp_path / "b.svg").read_text())
+    coax = [p for p in build(dict(SAMPLE), Topology(hf_shunt=True), "passive") if not p.name.startswith(("L_b", "C_b"))
+            and p.name != "bass"]
+    hf = [[p.name for p in c] for c in _Net(coax).legs("tp", "t2")]
+    assert hf[-1] == ["coax_hf"] and ["R_tr", "L_tr", "C_tr"] in hf   # the HF's RLC shunt is before K5 too
+    text = _text(draw_network(coax, "Coax", tmp_path / "c.svg").read_text())
+    assert "K4" in text and "K5" in text
+
+
+def test_links_svg_wraps_every_line_inside_the_canvas(tmp_path):
+    from speaker.schematic import LINK_TEXT
+    svg = draw_links(Topology(), tmp_path / "l.svg").read_text()
+    lines = [re.sub(r"<[^>]+>", "", t).strip() for t in re.findall(r"<text[^>]*>(.*?)</text>", svg, re.S)]
+    assert max(len(x) for x in lines) <= 150
+    flat = " ".join(lines)
+    for t in LINK_TEXT.values():
+        assert " ".join(t.split()[-4:]) in flat   # each link's sentence is there to its end

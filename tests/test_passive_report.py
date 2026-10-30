@@ -99,8 +99,8 @@ def test_parts_csv_lists_a_pair_with_types_and_ratings(monkeypatch):
     series = _result(Topology(bass_wiring="series"))
     res = _result(Topology(zobel=True), z_ok=False, series=series)
     rows = list(csv.DictReader(io.StringIO(pr.parts_csv(res, load_design(None)))))
-    assert list(rows[0]) == ["part", "value", "unit", "type", "tolerance", "dcr_ohm", "peak_a", "rating_w", "qty_pair",
-                             "network"]
+    assert list(rows[0]) == ["part", "value", "unit", "type", "tolerance", "dcr_ohm", "peak_a", "peak_v", "ripple_a",
+                             "rating_w", "qty_pair", "network"]
     par = {r["part"]: r for r in rows if r["network"] == "parallel"}
     ser = {r["part"]: r for r in rows if r["network"] == "series"}
     assert set(par) == set(value_names(Topology(zobel=True), "passive"))
@@ -108,10 +108,10 @@ def test_parts_csv_lists_a_pair_with_types_and_ratings(monkeypatch):
     assert all(r["qty_pair"] == "2" and r["tolerance"] == "5 %" for r in rows)
     assert par["L_b1"]["type"] == "cored inductor" and par["L_h1"]["type"] == "air-core inductor"
     assert float(par["L_b1"]["dcr_ohm"]) == pytest.approx(0.14 * np.sqrt(6.5), abs=0.005)
-    assert par["C_b1"]["type"] == "bipolar electrolytic capacitor"   # 100 µF in the bass network
-    assert par["C_bz"]["type"] == "bipolar electrolytic capacitor"   # 47 µF Zobel
-    assert par["C_h1"]["type"] == "polypropylene film capacitor"     # 100 µF, but in the coax network
-    assert par["C_l1"]["type"] == "polypropylene film capacitor"
+    assert par["C_b1"]["type"].startswith("bipolar electrolytic capacitor (")   # 100 µF in the bass network
+    assert par["C_bz"]["type"].startswith("bipolar electrolytic capacitor (")   # 47 µF Zobel
+    assert par["C_h1"]["type"].startswith("polypropylene film capacitor (")     # 100 µF, but in the coax network
+    assert par["C_l1"]["type"].startswith("polypropylene film capacitor (")
     assert par["R_ts"]["type"].startswith("resistor (") and par["R_ts"]["type"].endswith(" W)")
     assert int(par["R_ts"]["rating_w"]) in (5, 10, 15, 20, 30, 50) and par["R_ts"]["dcr_ohm"] == ""
     assert par["L_b1"]["value"] == "6.5" and par["L_b1"]["unit"] == "mH"
@@ -327,7 +327,7 @@ def test_the_compensator_is_in_the_bass_network_with_a_cored_coil_and_a_bipolar_
     res = _result(Topology(zobel=True, bass_comp=True))
     rows = {r["part"]: r for r in csv.DictReader(io.StringIO(pr.parts_csv(res, d)))}
     assert {"R_bc", "L_bc", "C_bc"} <= set(rows)
-    assert rows["C_bc"]["type"] == "bipolar electrolytic capacitor"   # 1500 µF in the bass network
+    assert rows["C_bc"]["type"].startswith("bipolar electrolytic capacitor (")   # 1500 µF in the bass network
     assert rows["L_bc"]["type"] == "cored inductor" and float(rows["L_bc"]["peak_a"]) > 0
     assert rows["R_bc"]["type"].startswith("resistor (")
     assert all(pr._in_bass_network(n) for n in ("R_bc", "L_bc", "C_bc"))
@@ -335,3 +335,55 @@ def test_the_compensator_is_in_the_bass_network_with_a_cored_coil_and_a_bipolar_
     assert "cored: saturation current at least this" in next(x for x in text.splitlines() if x.startswith("L_bc "))
     assert "an impedance-peak compensator across the woofers" in text
     assert "bc1" in pr.vituixcad_netlist(res) and "bc1, bc2" in pr.vituixcad_netlist(res)
+
+
+def test_capacitor_peak_voltage_and_ripple_current_at_full_voltage():
+    """10 µF in series with an 8 ohm load, 25 V rms: the capacitor takes nearly all the voltage at 20 Hz
+    (|Zc| 795.8 ohm), 25 x 795.8 / |8 - j 795.8| = 25.00 V rms, so 35.35 V peak, and the most current at 20 kHz,
+    25 / |8 - j 0.796| = 3.110 A rms. 1.5 x 35.35 = 53 V, so a 63 V part."""
+    from speaker.passive_report import cap_voltage_rating, capacitor_stress
+    f = np.geomspace(20, 20000, 50)
+    parts = [Part("C_t1", "C", "in", "o", 10e-6), Part("coax_hf", "Z", "o", "0", 0.0)]
+    st = capacitor_stress(parts, {"coax_hf": np.full(50, 8 + 0j)}, f, 25.0)
+    assert set(st) == {"C_t1"}
+    zc = lambda x: 1 / (2j * np.pi * x * 10e-6)
+    assert st["C_t1"][0] == pytest.approx(np.sqrt(2) * 25 * abs(zc(20.0)) / abs(8 + zc(20.0)), rel=1e-6)
+    assert st["C_t1"][0] == pytest.approx(35.35, abs=0.01)
+    assert st["C_t1"][1] == pytest.approx(25 / abs(8 + zc(20000.0)), rel=1e-6)
+    assert st["C_t1"][1] == pytest.approx(3.110, abs=0.001)
+    assert cap_voltage_rating(35.35) == 63 and cap_voltage_rating(33.0) == 50 and cap_voltage_rating(41.0) == 63
+    assert cap_voltage_rating(70.0) == 160 and cap_voltage_rating(200.0) == 500   # beyond 250 V: whole 250 V steps
+
+
+def test_capacitor_ratings_and_coil_heat_are_in_the_parts_list_and_the_sheet(monkeypatch):
+    import speaker.passive_report as pr
+    from speaker.evaluate import load_design
+    monkeypatch.setattr(pr, "impedances", lambda d, f: _resistive(f))
+    d = load_design(None)
+    res = _result(Topology(bass_comp=True))
+    rows = {r["part"]: r for r in csv.DictReader(io.StringIO(pr.parts_csv(res, d)))}
+    v = d.p.drive.amp_v_rms
+    loads = pr.driver_loads(_resistive(pr.Z_GRID), res.fit.topo)
+    want = [pr.capacitor_stress(build(res.fit.values, res.fit.topo, m), loads, pr.Z_GRID, v)
+            for m in ("passive", "semi_active")]
+    for n in ("C_b1", "C_bc", "C_h1", "C_l1", "C_t1", "C_t2"):
+        pv = max(w[n][0] for w in want if n in w)
+        assert float(rows[n]["peak_v"]) == pytest.approx(pv, abs=0.05)
+        assert float(rows[n]["ripple_a"]) == pytest.approx(max(w[n][1] for w in want if n in w), abs=0.005)
+        assert rows[n]["type"].endswith(f"({pr.cap_voltage_rating(pv)} V)")
+    assert rows["L_bc"]["peak_v"] == "" and rows["R_bc"]["ripple_a"] == ""
+    text = pr.network_text(res, d, TL)
+    line = next(x for x in text.splitlines() if x.startswith("L_bc "))
+    heat = (float(rows["L_bc"]["peak_a"]) / np.sqrt(2)) ** 2 * float(rows["L_bc"]["dcr_ohm"])
+    assert f"DCR heat {heat:.1f} W at full V" in line
+    cline = next(x for x in text.splitlines() if x.startswith("C_bc "))
+    assert f"{float(rows['C_bc']['peak_v']):.1f} V peak" in cline and "A rms" in cline
+
+
+def test_a_resistor_near_its_rating_says_to_buy_bigger():
+    from speaker.passive_report import _type
+    r = Part("R_bc", "R", "b1", "bc1", 2.7)
+    assert _type(r, 10, 8.87) == "resistor (10 W; buy 20-25 W)"   # 89 % of 10 W
+    assert _type(r, 10, 8.5) == "resistor (10 W; buy 20-25 W)"    # exactly 85 %
+    assert _type(r, 10, 7.97) == "resistor (10 W)"
+    assert _type(r, 5, 4.5) == "resistor (5 W; buy 10-12.5 W)"

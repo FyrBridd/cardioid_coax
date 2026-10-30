@@ -210,14 +210,15 @@ def _small_search(monkeypatch):
 
 
 def test_search_returns_a_grid_point_at_or_above_the_floor(monkeypatch):
-    from speaker.passive import OPTIONS, PassiveResult, Tolerance, search_passive
+    from speaker.passive import GRID_OPTIONS, OPTIONS, PassiveResult, Tolerance, search_passive
     _small_search(monkeypatch)
     res = search_passive(omni_ways(FIT_F), _resistive(), 2851.0, lf_hf_min=1200.0)
     assert isinstance(res, PassiveResult) and isinstance(res.tolerance, Tolerance)
     assert res.fit.bass_coax in (170.0, 210.0) and res.fit.lf_hf == 1600.0
     assert res.fit.z_ok and res.series is None
     assert res.fit.z_floor >= 3.5
-    assert len(res.notes) >= 1 + len(OPTIONS) + 1  # grid choice, each option, the tolerance check
+    # grid choice (which also settles GRID_OPTIONS), each option, the tolerance check
+    assert len(res.notes) >= 1 + len(OPTIONS) + 1 and not set(GRID_OPTIONS) & set(OPTIONS)
     assert all(isinstance(n, str) and n.endswith(".") for n in res.notes)
 
 
@@ -230,10 +231,12 @@ def test_search_with_no_lf_hf_point_above_the_driver_minimum_raises(monkeypatch)
 
 def test_search_falls_back_to_series_woofers_when_no_parallel_network_clears_the_floor(monkeypatch):
     # 1 ohm, 2nd-order bass: even the largest bass inductor (20 mH, with its DCR) leaves |Z_in| at 20 Hz under
-    # 3.5 ohm. No options: a 3rd-order bass adds a second series inductor and can clear it (and would be kept).
+    # 3.5 ohm. No options: a 3rd-order bass adds a second series inductor and can clear it (and would be kept), and
+    # so can the compensator (its reactances resonate with the bass coil and lift the input impedance).
     from speaker.passive import search_passive
     _small_search(monkeypatch)
     monkeypatch.setattr("speaker.passive.OPTIONS", ())
+    monkeypatch.setattr("speaker.passive.GRID_OPTIONS", ())
     res = search_passive(omni_ways(FIT_F), _resistive(bass=1.0), 2851.0, lf_hf_min=1200.0)
     assert res.fit.z_ok is False
     assert res.series is not None and res.series.fit.topo.bass_wiring == "series"
@@ -763,7 +766,7 @@ def test_bass_comp_flattens_the_woofer_impedance_peak():
 
 
 def test_bass_comp_values_and_netlist():
-    from speaker.passive import OPTION_TEXT, OPTIONS
+    from speaker.passive import GRID_OPTIONS, OPTION_TEXT, OPTIONS
     t = Topology(zobel=True, bass_comp=True)
     names = value_names(t, "passive")
     assert names[:7] == ["L_b1", "C_b1", "R_bz", "C_bz", "R_bc", "L_bc", "C_bc"]
@@ -771,7 +774,7 @@ def test_bass_comp_values_and_netlist():
     assert not {"R_bc", "L_bc", "C_bc"} & set(value_names(t, "semi_active"))
     assert "R_bc" not in value_names(Topology(), "passive")
     assert BOUNDS["C_bc"] == (100e-6, 3000e-6) and BOUNDS["L_bc"] == (1e-3, 50e-3) and BOUNDS["R_bc"] == (1.0, 20.0)
-    assert OPTIONS[0] == "bass_comp" and OPTIONS.index("lf_shelf") == 1
+    assert GRID_OPTIONS == ("bass_comp",) and "bass_comp" not in OPTIONS and OPTIONS[0] == "lf_shelf"
     assert OPTION_TEXT["bass_comp"] == "an impedance-peak compensator across the woofers"
     # a series R-L-C from the woofers' node to ground, on the network side (the woofers hang on the same node)
     for topo, end in ((t, "b1"), (Topology(bass_order=3, bass_comp=True), "b2")):
@@ -803,3 +806,24 @@ def test_bass_comp_values_and_netlist():
     vr = start_values(tc, 170.0, 1600.0, driver_loads(_resistive(bass=4.0)(Z_GRID), tc))
     for n in ("R_bc", "L_bc", "C_bc"):
         assert BOUNDS[n][0] < vr[n] < BOUNDS[n][1]
+
+
+def test_the_grid_offers_the_compensator_and_its_pick_settles_it(monkeypatch):
+    """At each grid pair the base topology and the base with the compensator are both fitted (four polarity pairs
+    each); the pick chooses among all of them, and the option stage never revisits the compensator."""
+    from speaker.passive import search_passive
+    calls = _fake_search(monkeypatch, lambda fb, t: (4.0, 1.0),
+                         lambda fit: {"whole_rear": 20.0} if fit.topo.bass_comp else {})
+    res = search_passive(omni_ways(FIT_F), _resistive(), 2851.0, lf_hf_min=None)
+    assert res.fit.topo.bass_comp
+    grid = calls[:8]
+    assert sum(t.bass_comp for t in grid) == 4 and sum(not t.bass_comp for t in grid) == 4
+    assert all(t.bass_comp for t in calls[8:])   # options are tried on the picked (compensated) network
+    assert "with an impedance-peak compensator across the woofers" in res.notes[0]
+    assert not any("Left out an impedance-peak" in n or "Kept an impedance-peak" in n for n in res.notes)
+    # and when the plain network scores better, it is picked and stays without
+    calls = _fake_search(monkeypatch, lambda fb, t: (4.0, 1.0),
+                         lambda fit: {} if fit.topo.bass_comp else {"whole_rear": 20.0})
+    res = search_passive(omni_ways(FIT_F), _resistive(), 2851.0, lf_hf_min=None)
+    assert not res.fit.topo.bass_comp and not any(t.bass_comp for t in calls[8:])
+    assert "without an impedance-peak compensator" in res.notes[0]

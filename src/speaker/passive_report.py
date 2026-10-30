@@ -40,6 +40,9 @@ from .xo_fit import fit_active, passive_warnings
 
 Z_FLOOR = 3.5  # ohm, the lowest the SA550 may see (main spec §7.2)
 RATINGS_W = (5, 10, 15, 20, 30, 50)  # standard resistor power ratings
+BUY_NEAR = 0.85  # a resistor whose 1/3-voltage dissipation reaches this share of its rating: buy 2-2.5 times it
+CAP_RATINGS_V = (50, 63, 100, 160, 250)  # standard capacitor voltage ratings
+CAP_MARGIN = 1.5  # a capacitor's voltage rating is at least this times its peak voltage at full amplifier voltage
 TOLERANCE_TEXT = "5 %"
 ELECTROLYTIC_MIN = 30e-6  # F, bipolar electrolytics are allowed above this, outside the coax network
 SHORTFALL_DB = 0.25  # dB, a score difference at least this large is reported
@@ -102,6 +105,30 @@ def peak_currents(parts: list[Part], z: dict[str, np.ndarray], f: np.ndarray, v_
             for p in parts if p.kind == "L"}
 
 
+def capacitor_stress(parts: list[Part], z: dict[str, np.ndarray], f: np.ndarray,
+                     v_rms: float) -> dict[str, tuple[float, float]]:
+    """Per capacitor: the peak voltage across it (V, √2 times the rms) and its rms (ripple) current (A) with a sine of
+    v_rms on the input, each the largest over f. z: each driver load's impedance on f, by its part name."""
+    sol = solve(parts, f, z)
+    w = 2 * np.pi * np.asarray(f, dtype=float)
+    out = {}
+    for p in parts:
+        if p.kind == "C":
+            v = np.abs(sol.across(p))
+            out[p.name] = (float(np.sqrt(2) * v_rms * v.max()), float(v_rms * np.max(v * w * p.value)))
+    return out
+
+
+def cap_voltage_rating(peak_v: float) -> int:
+    """The first of CAP_RATINGS_V at or above CAP_MARGIN times peak_v (V); above the series, whole multiples of its
+    top value."""
+    need = CAP_MARGIN * peak_v
+    for r in CAP_RATINGS_V:
+        if need <= r * (1 + 1e-9):
+            return r
+    return int(CAP_RATINGS_V[-1] * math.ceil(need / CAP_RATINGS_V[-1]))
+
+
 def _in_bass_network(name: str) -> bool:
     return name.startswith(_BASS_NETWORK) or name == "bass"
 
@@ -119,13 +146,18 @@ def _value_unit(p: Part) -> tuple[str, str]:
     return _num(p.value), "ohm"
 
 
-def _type(p: Part, rating: int | None) -> str:
+def _type(p: Part, rating: int | None, third_w: float | None = None, peak_v: float | None = None) -> str:
+    """The part's type with its rating: a resistor's power rating (and, when third_w, its dissipation at 1/3 of the
+    amp's voltage, reaches BUY_NEAR of it, the 2-2.5 times larger part to buy), a capacitor's voltage rating from
+    its peak voltage at full voltage (peak_v)."""
     if p.kind == "L":
         return "cored inductor" if p.name.startswith("L_b") else "air-core inductor"
     if p.kind == "C":
-        if _in_bass_network(p.name) and p.value > ELECTROLYTIC_MIN:
-            return "bipolar electrolytic capacitor"
-        return "polypropylene film capacitor"
+        kind = ("bipolar electrolytic capacitor" if _in_bass_network(p.name) and p.value > ELECTROLYTIC_MIN
+                else "polypropylene film capacitor")
+        return kind if peak_v is None else f"{kind} ({cap_voltage_rating(peak_v)} V)"
+    if rating is not None and third_w is not None and third_w >= BUY_NEAR * rating * (1 - 1e-9):
+        return f"resistor ({rating} W; buy {2 * rating:g}-{2.5 * rating:g} W)"
     return f"resistor ({rating} W)"
 
 
@@ -150,21 +182,32 @@ def _mode_currents(fit: PassiveFit, d: Design, modes: tuple[str, ...] = BOTH_MOD
     return {m: peak_currents(build(fit.values, fit.topo, m), loads, Z_GRID, d.p.drive.amp_v_rms) for m in modes}
 
 
+def _mode_caps(fit: PassiveFit, d: Design, modes: tuple[str, ...] = BOTH_MODES) -> dict[str, dict]:
+    """capacitor_stress at the amp's full voltage in each mode, on Z_GRID."""
+    loads = _loads(fit, d, Z_GRID)
+    return {m: capacitor_stress(build(fit.values, fit.topo, m), loads, Z_GRID, d.p.drive.amp_v_rms) for m in modes}
+
+
 def _part_rows(fit: PassiveFit, d: Design, modes: tuple[str, ...] = BOTH_MODES) -> list[dict]:
-    """One row per part of the passive netlist (build order, drivers left out), the resistor rating and an
-    inductor's peak current being the largest of the modes' (the series alternative is rated in passive mode only:
-    semi-active uses the parallel network's coax boards)."""
+    """One row per part of the passive netlist (build order, drivers left out), the resistor rating, an inductor's
+    peak current and a capacitor's peak voltage and ripple current being the largest of the modes' (the series
+    alternative is rated in passive mode only: semi-active uses the parallel network's coax boards)."""
     ratings = _mode_ratings(fit, d, modes)
     currents = _mode_currents(fit, d, modes)
+    caps = _mode_caps(fit, d, modes)
     rows = []
     for p in build(fit.values, fit.topo, "passive"):
         if p.kind == "Z":
             continue
         rating = max((r[p.name][2] for r in ratings.values() if p.name in r), default=None)
+        third = max((r[p.name][0] for r in ratings.values() if p.name in r), default=None)
         value, unit = _value_unit(p)
         peak = max((c[p.name] for c in currents.values() if p.name in c), default=None)
-        rows.append({"part": p, "value": value, "unit": unit, "type": _type(p, rating), "rating": rating,
-                     "modes": {m: r.get(p.name) for m, r in ratings.items()}, "peak_a": peak})
+        peak_v = max((c[p.name][0] for c in caps.values() if p.name in c), default=None)
+        ripple = max((c[p.name][1] for c in caps.values() if p.name in c), default=None)
+        rows.append({"part": p, "value": value, "unit": unit, "type": _type(p, rating, third, peak_v),
+                     "rating": rating, "modes": {m: r.get(p.name) for m, r in ratings.items()}, "peak_a": peak,
+                     "peak_v": peak_v, "ripple_a": ripple})
     return rows
 
 
@@ -204,9 +247,16 @@ def _z_min(parts: list[Part], loads: dict[str, np.ndarray], f: np.ndarray,
 
 
 def _peak_text(p: Part, peak: float | None) -> str:
+    """An inductor's peak current at full voltage, and the heat in its DCR at that current (sine, W)."""
     if peak is None:
         return "-"
-    return f"{peak:.2f} A" + (" (cored: saturation current at least this)" if p.name.startswith("L_b") else "")
+    return (f"{peak:.2f} A" + (" (cored: saturation current at least this)" if p.name.startswith("L_b") else "")
+            + f"; DCR heat {(peak / np.sqrt(2)) ** 2 * p.dcr:.1f} W at full V")
+
+
+def _cap_text(r: dict) -> str:
+    """A capacitor's peak voltage and ripple current at full voltage."""
+    return "-" if r.get("peak_v") is None else f"{r['peak_v']:.1f} V peak, {r['ripple_a']:.2f} A rms"
 
 
 def stopband_lines(fit: PassiveFit, d: Design) -> list[str]:
@@ -289,7 +339,8 @@ def _netlist_table(fit: PassiveFit, d: Design, mode: str, rows: list[dict]) -> l
     out = []
     for p in build(fit.values, fit.topo, mode):
         if p.kind == "Z":
-            out.append([p.name, "driver", _DRIVER_TEXT[p.name], "-", "-", "-", "-", _driver_nodes(p, fit.topo), "-"])
+            out.append([p.name, "driver", _DRIVER_TEXT[p.name], "-", "-", "-", "-", _driver_nodes(p, fit.topo), "-",
+                        "-"])
             continue
         r = by_name[p.name]
         m = r["modes"][mode] if p.kind == "R" else None
@@ -297,9 +348,9 @@ def _netlist_table(fit: PassiveFit, d: Design, mode: str, rows: list[dict]) -> l
         out.append([p.name, fmt_value(p.kind, p.value), r["type"], TOLERANCE_TEXT,
                     f"{p.dcr:.2f} Ω" if p.kind == "L" else "-",
                     f"{m[0]:.2f} W" if m else "-", f"{m[1]:.1f} W" if m else "-", f"{a}-{p.b}",
-                    _peak_text(p, r["peak_a"])])
+                    _cap_text(r), _peak_text(p, r["peak_a"])])
     return _table(["part", "value", "type", "tolerance", "DCR", "power at 1/3 V", "power at full V", "nodes",
-                   "peak current at full V"], out)
+                   "capacitor at full V", "peak current at full V"], out)
 
 
 def _terminals(m: dict) -> str:
@@ -379,12 +430,16 @@ def _header(d: Design, tl: float, what: str) -> list[str]:
         "# DCR: the coil resistance the model assumes (air core 0.5 Ω × √(L / 1 mH), cored 0.14 Ω × √(L / 1 mH)); "
         "a coil with a lower DCR is fine, a higher one changes the response",
         "# capacitors: polypropylene film in the coax network; bipolar electrolytic only in the bass network above "
-        f"{ELECTROLYTIC_MIN * 1e6:g} µF",
+        f"{ELECTROLYTIC_MIN * 1e6:g} µF; voltage rating (in the type) the first of "
+        f"{', '.join(str(r) for r in CAP_RATINGS_V)} V at or above {CAP_MARGIN:g} × the peak voltage at full amp "
+        "voltage (sine, 20 Hz-20 kHz, the larger of the modes); the ripple current is the rms current at full voltage",
         f"# power: the largest sine dissipation 20 Hz-20 kHz with 1/3 of the amp's {v:g} V rms on the input (about a "
         "tenth of full power, roughly what music averages) and with the full voltage; a resistor's rating is the "
         f"first of {', '.join(str(r) for r in RATINGS_W)} W at or above the 1/3-voltage figure; for the parallel "
         "network the larger of the passive and semi-active modes, for the series alternative passive mode only "
-        "(semi-active uses the parallel network's coax boards)",
+        f"(semi-active uses the parallel network's coax boards); where the 1/3-voltage figure reaches {BUY_NEAR:.0%} of "
+        "the rating, buy 2-2.5 times the rating: a sustained low bass note is close to a sine; inductors: the heat "
+        "in the DCR at the peak current's frequency, at full voltage",
         "# nodes: in = the IN terminal (amp +), 0 = ground (amp -); see vituixcad_netlist.txt for every node",
         "",
     ]
@@ -418,17 +473,20 @@ def network_text(result: PassiveResult, d: Design, tl: float, *, ways: Ways | No
 
 
 def parts_csv(result: PassiveResult, d: Design) -> str:
-    """The parts for a pair of speakers: part, value, unit, type, tolerance, DCR (ohm, inductors), peak current (A,
-    inductors: the sine peak at the amp's full voltage, the larger of the modes'; a cored coil's saturation current
-    must be at least this), rating (W, resistors), quantity, and the network (parallel or series woofers) it belongs
-    to."""
-    lines = ["part,value,unit,type,tolerance,dcr_ohm,peak_a,rating_w,qty_pair,network"]
+    """The parts for a pair of speakers: part, value, unit, type (with a capacitor's voltage rating and a
+    resistor's power rating), tolerance, DCR (ohm, inductors), peak current (A, inductors: the sine peak at the amp's
+    full voltage, the larger of the modes'; a cored coil's saturation current must be at least this), peak voltage
+    (V) and ripple current (A rms) of a capacitor at full voltage (the larger of the modes'), rating (W, resistors),
+    quantity, and the network (parallel or series woofers) it belongs to."""
+    lines = ["part,value,unit,type,tolerance,dcr_ohm,peak_a,peak_v,ripple_a,rating_w,qty_pair,network"]
     for res, modes in [(result, BOTH_MODES), *([(result.series, ("passive",))] if result.series is not None else [])]:
         for r in _part_rows(res.fit, d, modes):
             p = r["part"]
             lines.append(",".join([p.name, r["value"], r["unit"], r["type"], TOLERANCE_TEXT,
                                    f"{p.dcr:.3f}" if p.kind == "L" else "",
-                                   f"{r['peak_a']:.2f}" if r["peak_a"] is not None else "", str(r["rating"] or ""), "2",
+                                   f"{r['peak_a']:.2f}" if r["peak_a"] is not None else "",
+                                   f"{r['peak_v']:.1f}" if r["peak_v"] is not None else "",
+                                   f"{r['ripple_a']:.2f}" if r["ripple_a"] is not None else "", str(r["rating"] or ""), "2",
                                    res.fit.topo.bass_wiring]))
     return "\n".join(lines) + "\n"
 
@@ -557,9 +615,10 @@ def _parts_html(fit: PassiveFit, d: Design, modes: tuple[str, ...] = BOTH_MODES)
                           f"<td>{e(r['type'])}</td>", f"<td>{TOLERANCE_TEXT}</td>",
                           f'<td class="num">{p.dcr:.2f} Ω</td>' if p.kind == "L" else "<td>-</td>",
                           f'<td class="num">{power}</td>', f"<td>{e(p.a)} – {e(p.b)}</td>",
-                          f"<td>{e(_peak_text(p, r['peak_a']))}</td>"]))
+                          f"<td>{e(_cap_text(r))}</td>", f"<td>{e(_peak_text(p, r['peak_a']))}</td>"]))
     return ("<table><tr><th>Part</th><th>Value</th><th>Type</th><th>Tolerance</th><th>DCR</th>"
-            "<th>Power at 1/3 V / full V</th><th>Nodes</th><th>Peak current at full V</th></tr>" + "".join(rows)
+            "<th>Power at 1/3 V / full V</th><th>Nodes</th><th>Capacitor at full V</th><th>Peak current at full V</th>"
+            "</tr>" + "".join(rows)
             + "</table>")
 
 
